@@ -1,0 +1,14 @@
+# Closes the detection loop: every rule in detections/rules/ should have a row here
+# once it's been fired against with Atomic Red Team and observed in the SIEM.
+#
+# status: unvalidated | true_positive | false_positive | missed
+# mttd_seconds: time from atomic execution to alert appearing in Kibana (null until measured)
+
+- rule_id: 3d4e7b2a-9c1f-4a6e-8b2d-7f1e9a0c5d3b
+  rule_file: rules/proc_creation_win_encoded_powershell.yml
+  technique: T1059.001
+  atomic_test: "PowerShell Command"
+  status: unvalidated
+  mttd_seconds: null
+  last_run: null
+  notes: "Awaiting Elastic + Wazuh stack deployment (infra phase not yet complete)."

@@ -1,0 +1,23 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+.terraform.lock.hcl
+
+# OCI / SSH
+*.pem
+*.key
+oci_api_key*
+
+# Secrets
+.env
+*.env
+secrets/
+
+# OS
+.DS_Store
+Thumbs.db

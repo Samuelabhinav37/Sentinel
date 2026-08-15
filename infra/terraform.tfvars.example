@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored — never commit it.
+#
+# tenancy_ocid / user_ocid / fingerprint / private_key_path come from an OCI API signing key:
+# OCI Console -> Profile -> My Profile -> API Keys -> Add API Key
+
+tenancy_ocid      = "ocid1.tenancy.oc1..xxxxx"
+user_ocid         = "ocid1.user.oc1..xxxxx"
+fingerprint       = "xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx"
+private_key_path  = "~/.oci/oci_api_key.pem"
+region            = "us-ashburn-1"
+
+compartment_ocid  = "ocid1.tenancy.oc1..xxxxx" # root compartment OCID is fine for a personal tenancy
+
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# Reusable or ephemeral key from https://login.tailscale.com/admin/settings/keys
+tailscale_authkey = "tskey-auth-xxxxx"

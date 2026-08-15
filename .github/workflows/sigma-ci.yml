@@ -1,0 +1,52 @@
+name: Sigma detection CI
+
+on:
+  push:
+    paths:
+      - "detections/**"
+  pull_request:
+    paths:
+      - "detections/**"
+
+jobs:
+  validate-and-convert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sigma-cli + backends
+        run: pip install -r detections/requirements.txt
+
+      - name: Every rule must have an ATT&CK technique tag
+        run: |
+          fail=0
+          for f in detections/rules/*.yml; do
+            if ! grep -qE 'attack\.t[0-9]{4}' "$f"; then
+              echo "::error file=$f::missing an attack.t#### ATT&CK tag"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Validate Sigma rule syntax
+        run: sigma check detections/rules/
+
+      - name: Convert to Elasticsearch (EQL) — proves the rule is deployable to the live SIEM
+        run: sigma convert -t eql -p ecs_windows detections/rules/
+
+      - name: Convert to Splunk (SPL) — proves detection portability
+        run: sigma convert -t splunk -p splunk_windows detections/rules/
+
+      - name: Build ATT&CK Navigator coverage layer
+        run: |
+          mkdir -p docs
+          python detections/scripts/build_attack_navigator.py > docs/attack_coverage.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: attack-coverage
+          path: docs/attack_coverage.json
