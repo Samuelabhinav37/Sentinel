@@ -49,33 +49,33 @@ variable "public_subnet_cidr" {
   default = "10.0.1.0/24"
 }
 
-# --- Compute sizing (must stay within the Always Free Ampere A1 budget: 4 OCPU / 24GB total) ---
+# --- Compute sizing (VM.Standard.E4.Flex, paid via trial credit — not Always Free eligible) ---
 variable "elastic_ocpus" {
   type    = number
-  default = 2
+  default = 4
 }
 
 variable "elastic_memory_gb" {
   type    = number
-  default = 12
+  default = 32
 }
 
 variable "wazuh_ocpus" {
   type    = number
-  default = 1
+  default = 2
 }
 
 variable "wazuh_memory_gb" {
   type    = number
-  default = 6
+  default = 16
 }
 
 variable "soar_ocpus" {
   type    = number
-  default = 1
+  default = 2
 }
 
 variable "soar_memory_gb" {
   type    = number
-  default = 6
+  default = 16
 }

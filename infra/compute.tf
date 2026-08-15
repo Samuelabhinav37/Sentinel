@@ -2,13 +2,13 @@ data "oci_identity_availability_domains" "ads" {
   compartment_id = var.tenancy_ocid
 }
 
-data "oci_core_images" "ubuntu_arm" {
+data "oci_core_images" "ubuntu" {
   compartment_id           = var.compartment_ocid
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "22.04"
-  shape                    = "VM.Standard.A1.Flex"
+  shape                    = "VM.Standard.E4.Flex"
   sort_by                  = "TIMECREATED"
-  sort_order                = "DESC"
+  sort_order               = "DESC"
 }
 
 locals {
@@ -21,7 +21,7 @@ module "elastic_vm" {
   compartment_ocid    = var.compartment_ocid
   availability_domain = local.ad
   subnet_id            = oci_core_subnet.public.id
-  image_id             = data.oci_core_images.ubuntu_arm.images[0].id
+  image_id             = data.oci_core_images.ubuntu.images[0].id
   ssh_public_key_path  = var.ssh_public_key_path
   tailscale_authkey    = var.tailscale_authkey
 
@@ -37,7 +37,7 @@ module "wazuh_vm" {
   compartment_ocid    = var.compartment_ocid
   availability_domain = local.ad
   subnet_id            = oci_core_subnet.public.id
-  image_id             = data.oci_core_images.ubuntu_arm.images[0].id
+  image_id             = data.oci_core_images.ubuntu.images[0].id
   ssh_public_key_path  = var.ssh_public_key_path
   tailscale_authkey    = var.tailscale_authkey
 
@@ -53,7 +53,7 @@ module "soar_vm" {
   compartment_ocid    = var.compartment_ocid
   availability_domain = local.ad
   subnet_id            = oci_core_subnet.public.id
-  image_id             = data.oci_core_images.ubuntu_arm.images[0].id
+  image_id             = data.oci_core_images.ubuntu.images[0].id
   ssh_public_key_path  = var.ssh_public_key_path
   tailscale_authkey    = var.tailscale_authkey
 
