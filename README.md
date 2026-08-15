@@ -63,3 +63,10 @@ Wazuh running was torn down in favor of this code-driven version). Currently run
 Always Free `VM.Standard.A1.Flex` shape — free-tier Ampere A1 capacity was unavailable in
 the home region at provisioning time. Plan to right-size back down to Always Free-eligible
 shapes before the trial credit expires.
+
+All three service stacks are deployed and verified live: Elastic (Elasticsearch + Kibana),
+Wazuh (manager + indexer + dashboard) with Suricata and Zeek feeding it sensor telemetry,
+and Shuffle SOAR + n8n. Everything is reachable only over Tailscale, per the ingress design
+above. Not yet done: no Sigma rules are deployed as live detections in Elastic/Wazuh yet
+(only the one example rule exists as source), no Atomic Red Team validation has run, and
+the LLM triage pipeline in n8n hasn't been built.
