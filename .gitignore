@@ -19,6 +19,7 @@ oci_api_key*
 .env
 *.env
 secrets/
+**/wazuh_indexer_ssl_certs/
 
 # OS
 .DS_Store
