@@ -1,0 +1,67 @@
+name: sentinel-elastic
+
+services:
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.2.1
+    command: >
+      bash -c '
+        echo "Setting kibana_system password";
+        until curl -s -X POST -u elastic:${ELASTIC_PASSWORD} -H "Content-Type: application/json" http://elasticsearch:9200/_security/user/kibana_system/_password -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 2; done;
+        echo "kibana_system password set";
+      '
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.2.1
+    container_name: sentinel-elasticsearch
+    restart: unless-stopped
+    environment:
+      - node.name=sentinel-es01
+      - cluster.name=sentinel
+      - discovery.type=single-node
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - "ES_JAVA_OPTS=-Xms12g -Xmx12g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    mem_limit: 16g
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.2.1
+    container_name: sentinel-kibana
+    restart: unless-stopped
+    environment:
+      - SERVERNAME=sentinel-kibana
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+    mem_limit: 2g
+    ports:
+      - "5601:5601"
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  esdata:
