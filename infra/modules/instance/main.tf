@@ -29,6 +29,14 @@ resource "oci_core_instance" "this" {
       }
     ))
   }
+
+  # user_data / cloud-init only runs once at first boot - OCI has no API to re-apply
+  # it to a running instance, so the provider force-replaces the instance on any
+  # change. Once an instance is live, edit it directly (SSH) instead of through
+  # cloud-init; don't let template edits trigger a destroy of a running box.
+  lifecycle {
+    ignore_changes = [metadata]
+  }
 }
 
 output "public_ip" {

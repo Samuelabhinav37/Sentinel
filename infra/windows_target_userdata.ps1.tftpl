@@ -1,0 +1,9 @@
+#ps1_sysnative
+$ErrorActionPreference = "Stop"
+
+$msi = "$env:TEMP\tailscale-setup.msi"
+Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msi -UseBasicParsing
+Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait
+
+Start-Sleep -Seconds 15
+& "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${tailscale_authkey} --hostname=sentinel-win-target --ssh
