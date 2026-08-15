@@ -1,0 +1,23 @@
+{
+  "rule_id": "3d4e7b2a-9c1f-4a6e-8b2d-7f1e9a0c5d3b",
+  "name": "Encoded PowerShell Command Execution",
+  "description": "Detects execution of powershell.exe with -EncodedCommand (or its short forms), a common technique to obfuscate command-line arguments and evade static detection/logging. Source: detections/rules/proc_creation_win_encoded_powershell.yml, compiled from Sigma via sigma-cli (eql, ecs_windows pipeline).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable.caseless:\"*\\\\powershell.exe\" and process.command_line regex~ \"(?i)-[e]{1}(nc(o(d(e(d(c(o(m(m(a(n(d)?)?)?)?)?)?)?)?)?)?)?)?\\\\s\"",
+  "index": ["winlogbeat-*", "logs-windows.*"],
+  "severity": "medium",
+  "risk_score": 47,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.execution", "attack.t1059.001", "attack.t1027", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1059/001/",
+    "https://attack.mitre.org/techniques/T1027/"
+  ],
+  "false_positives": [
+    "Legitimate admin scripts that pass base64-encoded commands"
+  ],
+  "author": ["Sentinel"]
+}
