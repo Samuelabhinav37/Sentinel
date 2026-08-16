@@ -1,9 +1,37 @@
 #ps1_sysnative
 $ErrorActionPreference = "Stop"
+$log = "C:\Windows\Temp\sentinel-userdata.log"
+function Log($msg) { "$(Get-Date -Format o) $msg" | Out-File -FilePath $log -Append; Write-Output $msg }
 
+$tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
 $msi = "$env:TEMP\tailscale-setup.msi"
-Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msi -UseBasicParsing
-Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait
 
-Start-Sleep -Seconds 15
-& "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${tailscale_authkey} --hostname=sentinel-win-target --ssh
+$installed = $false
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    Log "Install attempt $attempt"
+    try {
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msi -UseBasicParsing
+        $proc = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart /log C:\Windows\Temp\tailscale-msi.log" -Wait -PassThru
+        Log "msiexec exit code: $($proc.ExitCode)"
+    } catch {
+        Log "Download/install attempt $attempt threw: $_"
+    }
+
+    # msiexec can report success before the binary is fully placed; poll briefly.
+    for ($i = 0; $i -lt 12; $i++) {
+        if (Test-Path $tailscaleExe) { $installed = $true; break }
+        Start-Sleep -Seconds 5
+    }
+    if ($installed) { break }
+    Log "tailscale.exe not present after attempt $attempt, retrying"
+    Start-Sleep -Seconds 15
+}
+
+if (-not $installed) {
+    Log "FATAL: tailscale.exe never appeared after 3 install attempts"
+    exit 1
+}
+
+Log "Running tailscale up"
+& $tailscaleExe up --authkey=${tailscale_authkey} --hostname=sentinel-win-target
+Log "tailscale up exit code: $LASTEXITCODE"
