@@ -1,0 +1,143 @@
+{
+  "id": "sentinel-llm-triage",
+  "name": "Sentinel LLM Triage",
+  "active": true,
+  "settings": {},
+  "nodes": [
+    {
+      "id": "schedule-1",
+      "name": "Poll Every 5 Min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      }
+    },
+    {
+      "id": "code-build-auth-query",
+      "name": "Build Auth",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "jsCode": "const auth = 'Basic ' + Buffer.from('elastic:' + $env.N8N_ELASTIC_PASSWORD).toString('base64');\nreturn [{ json: { auth } }];"
+      }
+    },
+    {
+      "id": "http-fetch-alerts",
+      "name": "Fetch New Alerts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_ELASTIC_URL + '/.alerts-security.alerts-default*/_search' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{$json.auth}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"size\": 50, \"sort\": [{ \"kibana.alert.start\": \"desc\" }], \"query\": { \"bool\": { \"filter\": [ { \"term\": { \"kibana.alert.rule.tags\": \"sentinel-sigma\" } }, { \"range\": { \"kibana.alert.start\": { \"gte\": \"now-10m\" } } } ] } } } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "split-alerts",
+      "name": "Split Alerts",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [660, 0],
+      "parameters": {
+        "fieldToSplitOut": "hits.hits",
+        "options": {}
+      }
+    },
+    {
+      "id": "code-build-prompt",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "parameters": {
+        "jsCode": "// Each item here is one Elasticsearch hit: { _index, _id, _source: {...} }\nconst hit = $input.first().json;\nconst alert = hit._source || hit;\nconst alertId = hit._id;\n\nconst ruleName = alert.rule_name\n  || alert['kibana.alert.rule.name']\n  || (alert.rule && alert.rule.name)\n  || 'Unknown rule';\n\nconst host = alert.host_name\n  || alert['host.name']\n  || (alert.host && alert.host.name)\n  || 'unknown-host';\n\nconst description = alert.description\n  || alert['kibana.alert.rule.description']\n  || (alert.rule && alert.rule.description)\n  || '';\n\nconst raw = JSON.stringify(alert).slice(0, 3000);\n\nconst prompt = [\n  'You are a SOC triage analyst. Read the detection alert below and respond',\n  'with ONLY a single JSON object, no other text, matching this schema:',\n  '{\"severity\": \"low|medium|high|critical\", \"false_positive_likelihood\": \"low|medium|high\", \"summary\": \"one sentence\", \"recommended_action\": \"one sentence\"}',\n  '',\n  'Alert:',\n  'Rule: ' + ruleName,\n  'Host: ' + host,\n  'Description: ' + description,\n  'Raw fields (truncated): ' + raw\n].join('\\n');\n\nreturn [{\n  json: {\n    prompt,\n    alert_id: alertId,\n    original_alert: alert\n  }\n}];"
+      }
+    },
+    {
+      "id": "http-call-ollama",
+      "name": "Call Ollama",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"model\": \"llama3.2:3b\", \"prompt\": $json.prompt, \"stream\": false, \"format\": \"json\" } }}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "code-parse-triage",
+      "name": "Parse Triage + Auth",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 0],
+      "parameters": {
+        "jsCode": "const llmOutput = $input.first().json;\nconst original = $('Build Prompt').item.json.original_alert;\nconst alertId = $('Build Prompt').item.json.alert_id;\n\nlet triage;\ntry {\n  triage = JSON.parse(llmOutput.response);\n} catch (e) {\n  triage = {\n    severity: 'unknown',\n    false_positive_likelihood: 'unknown',\n    summary: 'LLM output could not be parsed as JSON',\n    recommended_action: 'manual review',\n    raw_llm_output: llmOutput.response\n  };\n}\n\nconst doc = {\n  '@timestamp': new Date().toISOString(),\n  alert_id: alertId,\n  alert: original,\n  triage\n};\n\nconst auth = 'Basic ' + Buffer.from('elastic:' + $env.N8N_ELASTIC_PASSWORD).toString('base64');\n\nreturn [{ json: { doc, auth, alertId } }];"
+      }
+    },
+    {
+      "id": "http-write-es",
+      "name": "Write to Elasticsearch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 0],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.N8N_ELASTIC_URL + '/sentinel-triage/_doc/' + $json.alertId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{$json.auth}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.doc}}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Poll Every 5 Min": {
+      "main": [[{ "node": "Build Auth", "type": "main", "index": 0 }]]
+    },
+    "Build Auth": {
+      "main": [[{ "node": "Fetch New Alerts", "type": "main", "index": 0 }]]
+    },
+    "Fetch New Alerts": {
+      "main": [[{ "node": "Split Alerts", "type": "main", "index": 0 }]]
+    },
+    "Split Alerts": {
+      "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]]
+    },
+    "Build Prompt": {
+      "main": [[{ "node": "Call Ollama", "type": "main", "index": 0 }]]
+    },
+    "Call Ollama": {
+      "main": [[{ "node": "Parse Triage + Auth", "type": "main", "index": 0 }]]
+    },
+    "Parse Triage + Auth": {
+      "main": [[{ "node": "Write to Elasticsearch", "type": "main", "index": 0 }]]
+    }
+  }
+}

@@ -9,14 +9,50 @@ services:
       - N8N_HOST=${N8N_HOST}
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
+      # Access is over plain HTTP within the private Tailscale mesh only
+      # (same tradeoff as Elasticsearch elsewhere in this project) - secure
+      # cookies require HTTPS, which we don't terminate here.
+      - N8N_SECURE_COOKIE=false
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
       - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
       - GENERIC_TIMEZONE=UTC
+      # Code nodes need $env access to build the ES basic-auth header without
+      # the password ever being pasted into a committed workflow JSON.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_ELASTIC_URL=${N8N_ELASTIC_URL}
+      - N8N_ELASTIC_PASSWORD=${N8N_ELASTIC_PASSWORD}
     ports:
       - "5678:5678"
     volumes:
       - n8n_data:/home/node/.n8n
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sentinel-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  # One-shot: pulls the triage model once, then exits. Ollama has no
+  # declarative "ensure model present" config, so this is the same
+  # bootstrap-container pattern used for suricata-update.
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: sentinel-ollama-pull
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    entrypoint: ["/bin/sh", "-c", "ollama pull llama3.2:3b"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+
 volumes:
   n8n_data:
+  ollama_data:
