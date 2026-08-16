@@ -20,7 +20,7 @@ logsource:
 detection:
   selection:
     Image|endswith: '\powershell.exe'
-    CommandLine|re: '(?i)-[e]{1}(nc(o(d(e(d(c(o(m(m(a(n(d)?)?)?)?)?)?)?)?)?)?)?)?\s'
+    CommandLine|re: '-[e]{1}(nc(o(d(e(d(c(o(m(m(a(n(d)?)?)?)?)?)?)?)?)?)?)?)?\s'
   condition: selection
 falsepositives:
   - Legitimate admin scripts that pass base64-encoded commands

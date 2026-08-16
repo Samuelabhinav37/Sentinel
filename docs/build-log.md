@@ -638,6 +638,67 @@ field alone wasn't a reliable verification signal). Cleaned up the verification 
 afterward; the other unrelated leftover files in `/tmp` on `sentinel-elastic` were left
 alone since deleting them wasn't part of this task.
 
+## Phase 21 — cleaning up stray debug files, then a real bug in the last unvalidated rule
+
+Before starting new work, swept `/tmp` on the live VMs for leftovers from earlier live
+debugging (checked cron/systemd first to confirm nothing referenced them, then deleted):
+five files on `sentinel-elastic` (old ad-hoc query-result dumps and the two Mordor
+dataset zips, since those are re-downloadable and not meant to be committed), and ~44MB
+of 7 stale `n8n_check*.sqlite` copies (plus WAL/SHM files) on `sentinel-soar` left over
+from the SQLite-based debugging in Phase 18. `sentinel-wazuh` was already clean;
+`sentinel-hub` is offline and wasn't reachable.
+
+Then tackled the three Sigma rules with no matching Mordor sample (encoded PowerShell,
+certutil download, Defender disabled). No live Windows target exists, so built
+`detections/scripts/inject_synthetic_events.py`: hand-crafted ECS events matching the
+exact shape `replay_mordor_dataset.py` produces, one positive event per rule plus a
+benign negative control per rule (same tool, non-malicious flags), indexed into
+`winlogbeat-synthetic-validation` so the live Kibana rules and n8n pipeline evaluate them
+on their normal schedule — same methodology as the Mordor replay, just without genuine
+recorded telemetry behind it. This is explicitly weaker evidence than the Mordor-replay
+validation and is called out as such in `validation.yml`.
+
+First live-fire attempt: certutil and Defender-disabled fired correctly (and neither
+negative control did), but encoded PowerShell fired 0/1. Root-caused via `_eql/search`
+run directly against the test index: the deployed query was
+`process.command_line regex~ "(?i)-[e]{1}(nc(...)?)?\s"`. Two compounding bugs, found by
+bisecting the query clause by clause:
+
+1. Elasticsearch's EQL `regex~` operator performs a **full-string match**
+   (`^pattern$`), not a substring search — and the `sigma-cli` `ecs_windows` EQL backend
+   never wraps the compiled pattern in `.*...*` to compensate. Sigma's `|re` modifier
+   means "matches anywhere in the field," so every Sigma rule converted through this
+   backend with a `|re` modifier is silently broken against real data unless the deployed
+   query is hand-wrapped. The other four rules use `like~`/`:` wildcard operators
+   (`*text*`), which are unaffected — this backend gap only bites `regex~`.
+2. The `(?i)` inline case-insensitivity flag isn't valid syntax for the Lucene automaton
+   regex engine EQL's `regex~` runs on (it isn't real PCRE) — it gets matched as literal
+   text, which never appears in a real command line, so it silently kills every match
+   regardless of the anchoring fix. It's also redundant: confirmed via direct testing
+   that `regex~` is already case-insensitive by default (an uppercase `-ENCODEDCOMMAND`
+   variant matched a lowercase-only pattern once anchoring was fixed), so `(?i)` was never
+   needed in the first place. (Briefly went down a dead end here — tried adding a
+   `process.command_line.lowercase` runtime field, analogous to the existing `.caseless`
+   field, to sidestep case-sensitivity entirely. That surfaced a third, unrelated
+   limitation — `regex~` against a script-backed runtime field throws
+   `Match flags not yet implemented [256]` in this Elasticsearch version — before the
+   anchoring test above showed the runtime field wasn't needed at all. Reverted it.)
+
+Fixed at the source: dropped the hand-embedded `(?i)` from
+`detections/rules/proc_creation_win_encoded_powershell.yml`'s Sigma pattern (was never
+valid to begin with), then re-ran `sigma-cli` to reconvert, then hand-wrapped the
+compiled EQL pattern with `.*...*` when transcribing into
+`detections/deployed/proc_creation_win_encoded_powershell.json` — the same kind of
+manual backend-specific patch already applied for the `.caseless` field, since pysigma's
+EQL backend doesn't know about either quirk. Redeployed, re-ran the synthetic events, and
+confirmed exactly 3 alerts (one per rule) with zero false positives from the 3 negative
+controls, all 3 correctly triaged by the n8n/Ollama pipeline.
+
+All 5 deployed Sigma rules now have a `true_positive` validation.yml entry — two backed
+by real replayed attack telemetry (Phase 19), three by synthetic events built for this
+phase specifically because no Mordor sample exists for them. Cleaned up the test index
+and temp files afterward.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -655,11 +716,15 @@ setup's ingress design):
 
 **Detection-as-code**: 5 Sigma rules, all validated and converted in CI to both Elastic
 EQL and Splunk SPL, all deployed live as scheduled Kibana detection rules. ATT&CK
-coverage: 7 techniques. Two of the five (LSASS/comsvcs, scheduled-task creation) have now
-been **confirmed firing correctly against real attack telemetry** (replayed from OTRF
-Mordor, not live-generated) — the other three (encoded PowerShell, certutil, Defender
-disabled) are deployed and mechanically verified but have no matching Mordor sample yet,
-so still await either a live Windows host or a hand-built synthetic event.
+coverage: 7 techniques. All 5 are now **confirmed firing correctly** — two against real
+replayed attack telemetry from OTRF Mordor (LSASS/comsvcs, scheduled-task creation), and
+three against hand-built synthetic events (encoded PowerShell, certutil, Defender
+disabled — no Mordor sample exists for these). The synthetic-event pass also caught and
+fixed a real bug: the encoded-PowerShell rule's compiled EQL query could never have
+matched real data either, due to an unwrapped `regex~` anchoring gap in the `sigma-cli`
+`ecs_windows` backend plus an invalid `(?i)` flag (see Phase 21). Every rule's validation
+now also has an explicit negative control confirming it doesn't fire on benign use of the
+same tool.
 
 **LLM triage pipeline**: n8n polls Elasticsearch every 5 minutes for `sentinel-sigma`-
 tagged alerts, has a self-hosted Ollama model assess severity/false-positive
@@ -676,15 +741,16 @@ just this replay. Both templates are now committed as reproducible IaC under
 `infra/elasticsearch/index-templates/` (pulled from the live cluster and verified via a
 round-trip redeploy, see Phase 20), not just ad-hoc `curl` commands.
 
-`detections/tests/validation.yml` now reflects the real Phase 19 results: the
-LSASS/comsvcs and scheduled-task rules are `true_positive`, the other three remain
-`unvalidated` pending a Mordor sample, live Windows target, or hand-built synthetic event.
+`detections/tests/validation.yml` now has all 5 rules as `true_positive` — the notes on
+each entry are explicit about whether the evidence is a real Mordor replay or a
+hand-built synthetic event, since those are not equally strong evidence.
 
 **Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down);
-Atomic Red Team validation for the 3 rules without a matching Mordor sample; live Atomic
-Red Team runs against a disposable Linux VM (the better option for Linux coverage,
-identified but not yet built); a from-Kibana push-based alternative to the n8n polling
-design, if the license is ever upgraded.
+live Atomic Red Team runs against either a real Windows host or a disposable Linux VM
+(the better option for Linux coverage, identified but not yet built) — everything
+validated so far has been replayed or synthetic, not a live attack execution; a
+from-Kibana push-based alternative to the n8n polling design, if the license is ever
+upgraded.
 
 ## Lessons worth writing about
 
