@@ -1,0 +1,110 @@
+{
+  "id": "sentinel-llm-triage-push",
+  "name": "Sentinel LLM Triage (Push)",
+  "active": true,
+  "settings": {},
+  "nodes": [
+    {
+      "id": "webhook-alert",
+      "name": "Alert Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "b6e5a6b0-9c3a-4b7a-8e2a-2f0a5f6b7c8d",
+      "parameters": {
+        "path": "sentinel-alert-push",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "split-alerts-push",
+      "name": "Split Alerts",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [220, 0],
+      "parameters": {
+        "fieldToSplitOut": "body.alerts",
+        "options": {}
+      }
+    },
+    {
+      "id": "code-build-prompt-push",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Each item here is one alert object from Kibana's webhook action payload\n// (context.alerts[N] from the .webhook connector, body = {{{context}}}).\n// Unlike the polling pipeline's raw ES search hits, these arrive without a\n// _source wrapper -- fields like host/process/kibana.alert.rule.* are\n// already at the top level.\nconst alert = $json;\nconst alertId = alert._id;\n\nconst ruleName = (alert.kibana && alert.kibana.alert && alert.kibana.alert.rule && alert.kibana.alert.rule.name)\n  || (alert.signal && alert.signal.rule && alert.signal.rule.name)\n  || 'Unknown rule';\n\nconst host = (alert.host && alert.host.name) || 'unknown-host';\n\nconst description = (alert.kibana && alert.kibana.alert && alert.kibana.alert.rule && alert.kibana.alert.rule.description)\n  || (alert.signal && alert.signal.rule && alert.signal.rule.description)\n  || '';\n\nconst raw = JSON.stringify(alert).slice(0, 3000);\n\nconst prompt = [\n  'You are a SOC triage analyst. Read the detection alert below and respond',\n  'with ONLY a single JSON object, no other text, matching this schema:',\n  '{\"severity\": \"low|medium|high|critical\", \"false_positive_likelihood\": \"low|medium|high\", \"summary\": \"one sentence\", \"recommended_action\": \"one sentence\"}',\n  '',\n  'Alert:',\n  'Rule: ' + ruleName,\n  'Host: ' + host,\n  'Description: ' + description,\n  'Raw fields (truncated): ' + raw\n].join('\\n');\n\nreturn {\n  json: {\n    prompt,\n    alert_id: alertId,\n    original_alert: alert\n  }\n};"
+      }
+    },
+    {
+      "id": "http-call-ollama-push",
+      "name": "Call Ollama",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"model\": \"llama3.2:3b\", \"prompt\": $json.prompt, \"stream\": false, \"format\": \"json\" } }}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    },
+    {
+      "id": "code-parse-triage-push",
+      "name": "Parse Triage + Auth",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const llmOutput = $json;\nconst original = $('Build Prompt').item.json.original_alert;\nconst alertId = $('Build Prompt').item.json.alert_id;\n\nlet triage;\ntry {\n  triage = JSON.parse(llmOutput.response);\n} catch (e) {\n  triage = {\n    severity: 'unknown',\n    false_positive_likelihood: 'unknown',\n    summary: 'LLM output could not be parsed as JSON',\n    recommended_action: 'manual review',\n    raw_llm_output: llmOutput.response\n  };\n}\n\n// Own doc id (alertId + '-push'), distinct from the polling pipeline's plain\n// alertId -- both pipelines are active in parallel for comparison, and without\n// this they'd silently overwrite each other's triage result via the shared\n// PUT-by-id idempotency pattern.\nconst doc = {\n  '@timestamp': new Date().toISOString(),\n  alert_id: alertId,\n  alert: original,\n  triage,\n  triage_source: 'push'\n};\n\nconst auth = 'Basic ' + Buffer.from('elastic:' + $env.N8N_ELASTIC_PASSWORD).toString('base64');\n\nreturn { json: { doc, auth, docId: alertId + '-push' } };"
+      }
+    },
+    {
+      "id": "http-write-es-push",
+      "name": "Write to Elasticsearch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 0],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.N8N_ELASTIC_URL + '/sentinel-triage/_doc/' + $json.docId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{$json.auth}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.doc}}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Alert Webhook": {
+      "main": [[{ "node": "Split Alerts", "type": "main", "index": 0 }]]
+    },
+    "Split Alerts": {
+      "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]]
+    },
+    "Build Prompt": {
+      "main": [[{ "node": "Call Ollama", "type": "main", "index": 0 }]]
+    },
+    "Call Ollama": {
+      "main": [[{ "node": "Parse Triage + Auth", "type": "main", "index": 0 }]]
+    },
+    "Parse Triage + Auth": {
+      "main": [[{ "node": "Write to Elasticsearch", "type": "main", "index": 0 }]]
+    }
+  }
+}
