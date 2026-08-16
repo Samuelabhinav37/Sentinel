@@ -1,9 +1,11 @@
-# Sentinel build log — 2026-08-15
+# Sentinel build log — 2026-08-15 onward
 
-A detailed, chronological account of the first real build session on Sentinel, the
+A detailed, chronological account of the build sessions on Sentinel, the
 detection/correlation/response component of a larger code-driven SOC project (alongside
 Axon and PRISM). Written to be source material for a blog post later — kept factual and
-in order, including the mistakes, not just the clean version.
+in order, including the mistakes, not just the clean version. Phases 1-8 are the first
+session (initial infra + first detection); Phase 9 onward is a later session that
+continued from where that one paused.
 
 ## Starting point
 
@@ -277,6 +279,198 @@ Winlogbeat shipping to Elasticsearch, generate a real `-EncodedCommand` executio
 confirm the live detection rule actually fires end-to-end, then formalize that as an
 Atomic Red Team validation entry in `detections/tests/validation.yml`.
 
+## Phase 9 — resuming, and diagnosing why the Windows VM never joined
+
+Picked back up in a later session. `sentinel-win-target` had been mid-boot when the
+previous session paused; checking `tailscale status` on the elastic VM showed it still
+hadn't appeared almost 1.5 hours later — too long for a normal Windows first boot, and
+long enough to stop assuming "still booting" and actually investigate. RDP being closed
+wasn't a useful signal either way — port 3389 was never opened in the security list by
+design (only SSH and Tailscale are public-facing), so a closed RDP port is expected
+regardless of whether cloud-init succeeded.
+
+With no SSH/RDP access to a box that isn't on the tailnet yet, the only way in was OCI's
+serial console history. No `oci` CLI was installed locally, so the `oci` Python SDK was
+installed instead and used directly (`CaptureConsoleHistory` + `GetConsoleHistoryContent`)
+to pull the boot log. First attempt at reading it produced a wall of literal `\r\n` escape
+sequences instead of real line breaks — the script had been `print()`-ing a raw Python
+`bytes` object, which renders its `repr()` rather than the decoded text. Fixed by decoding
+to UTF-8 before printing.
+
+With readable output, the actual failure was clear: cloudbase-init ran the userdata script
+fully, but the final step — `& "C:\Program Files\Tailscale\tailscale.exe" up ...` — failed
+with "not recognized as the name of a cmdlet." The `msiexec` install one line above had
+failed silently: `Start-Process -Wait` doesn't check the child process's exit code, so a
+failed install and a successful one look identical to the calling script.
+
+Rewrote `windows_target_userdata.ps1.tftpl` to actually verify success: up to 3
+install attempts, polling for `tailscale.exe` to exist on disk before ever calling it, and
+logging progress to `C:\Windows\Temp\sentinel-userdata.log` for easier diagnosis if it
+ever fails again. Recreated the VM via `terraform apply -replace=oci_core_instance.windows_target`
+(confirmed via `terraform plan` first that this touched only that one resource — the three
+live core VMs were untouched, consistent with the `ignore_changes = [metadata]` fix from
+Phase 3).
+
+The recreated VM *still* didn't join Tailscale. Pulling the console log again (using the
+now-fixed decode) showed real progress this time — the retry logic worked, catching a
+transient `msiexec` exit `1618` ("another installation is already in progress," likely
+racing a first-boot Windows service) and succeeding on the second attempt — but the final
+`tailscale up --ssh` call itself failed outright: `500 Internal Server Error: The Tailscale
+SSH server is not supported on windows`. The `--ssh` flag had been copied over from the
+Linux VMs' cloud-init template without checking whether it applied to Windows; it doesn't
+— Tailscale SSH is Linux/macOS-only. Removed the flag, recreated the VM a second time
+(again confirmed via plan that only the Windows resource was touched).
+
+Mid-way through waiting for that second rebuild to join the tailnet, the decision was made
+to stop and fully tear the Windows VM down rather than keep iterating — the underlying
+script bug was already found and fixed for whenever it's picked back up, so continuing to
+debug the live instance wasn't adding value. Destroyed via
+`terraform plan -destroy -target=oci_core_instance.windows_target` / `apply` (confirmed:
+0 added, 0 changed, 1 destroyed — the other three VMs untouched). The corrected userdata
+script stays in the repo, committed, ready to redeploy cleanly next time.
+
+## Phase 10 — pivoting to the LLM triage pipeline and more detections
+
+With the Windows telemetry thread deliberately paused, moved to two pieces of work that
+don't depend on it: the n8n LLM-triage pipeline (the "LLM-augmented" half of the project's
+pitch, not yet built at all) and more Sigma rules through the pipeline already proven in
+Phase 7.
+
+The one real decision needed up front: what powers the LLM triage step. Given the
+project's stated goal of staying mostly open-source and the existing cost-consciousness
+around the OCI trial credit, chose **self-hosted Ollama** over the Anthropic API — zero
+marginal cost, keeps the whole stack self-contained, at the price of weaker triage quality
+than a hosted frontier model.
+
+## Phase 11 — deploying Ollama
+
+Checked headroom on the SOAR VM before deciding where to run it: 4 vCPU, ~9.6GB available
+RAM (out of 15GB, with Shuffle's OpenSearch container already using ~3.7GB), 28GB free
+disk. Enough to co-locate Ollama alongside n8n and the existing Shuffle stack without
+resizing or adding a fourth VM.
+
+Added `ollama/ollama` to the n8n compose file, plus a one-shot `ollama-pull` bootstrap
+container (`depends_on: condition: service_healthy` on the main Ollama service) to pull
+`llama3.2:3b` once — the same "setup container runs first" pattern already used for
+Suricata's rule updates and Kibana's password bootstrap in earlier phases. Chose the 3B
+model specifically for CPU-inference latency, since there's no GPU on this box and triage
+is a low-throughput, occasional workload rather than something needing to be fast at
+scale. Verified with a real inference call via `docker exec sentinel-ollama ollama run
+llama3.2:3b "..."` — got a correct response back.
+
+## Phase 12 — building the n8n triage workflow, and several real n8n bugs
+
+Designed the pipeline as: webhook trigger → build a triage prompt from the alert → call
+Ollama → parse its JSON verdict → write the enriched result into a new `sentinel-triage`
+Elasticsearch index → respond. Needed the `elastic` user's Elasticsearch password inside
+n8n's environment; moved it VM-to-VM with a piped SSH command
+(`ssh elastic-vm "grep ..." | ssh soar-vm "cat >> .env"`) so the plaintext value never
+passed through anything visible — the same secret-handling discipline as earlier phases.
+
+Wrote the workflow as a committed JSON file and imported it via `n8n import:workflow`
+rather than hand-building it in the UI and leaving it undocumented. First import failed
+with `SQLITE_CONSTRAINT: NOT NULL constraint failed: workflow_entity.id` — the workflow
+JSON needs its own top-level `id` field, not just per-node `id`s; fixed by adding one.
+
+Getting the webhook to actually respond surfaced a chain of real bugs:
+
+1. Opening the n8n UI at all failed first: *"Your n8n server is configured to use a
+   secure cookie, however you are either visiting this via an insecure URL..."* — n8n
+   defaults to secure-only cookies, which don't work over plain HTTP on the private
+   Tailscale mesh. Fixed with `N8N_SECURE_COOKIE=false` — the same TLS-vs-private-network
+   tradeoff already made for Elasticsearch in Phase 4.
+2. n8n then demanded a brand-new owner account through a `/setup` wizard — the
+   `N8N_BASIC_AUTH_*` env vars from the original deployment turned out to be vestigial in
+   this n8n release, superseded by n8n's own built-in user-management system. Created an
+   owner account through the UI (unavoidable to type a password into a browser form for a
+   one-time GUI setup step, unlike everything else in this project which has kept secrets
+   out of the visible transcript).
+3. This n8n version has a newer draft/publish workflow-versioning model, distinct from the
+   classic single Active/Inactive toggle most n8n documentation assumes. CLI-imported
+   workflows always land deactivated, and neither `n8n update:workflow --active=true` nor
+   `n8n publish:workflow` reliably re-registered the webhook route after a container
+   restart — despite the startup log claiming `Activated workflow "Sentinel LLM Triage"`.
+4. Root-caused by reading the actual SQLite database directly rather than guessing further
+   — which itself needed care, since n8n runs SQLite in WAL mode: copying just
+   `database.sqlite` out of the container gave a stale, effectively empty view (0 rows in
+   every table) until the `-wal`/`-shm` files were copied alongside it too. With a correct
+   read, the real bug was visible in the `webhook_entity` table: the hand-authored Webhook
+   node was missing a `webhookId` field that n8n normally auto-generates when a node is
+   added through the UI. Without it, n8n registered a synthetic fallback route
+   (`sentinel-llm-triage/alert%20webhook/sentinel-triage`) instead of the plain
+   `/webhook/sentinel-triage` path actually being called — hence the persistent 404s.
+   Added a generated UUID as the node's `webhookId`, and the webhook registered correctly
+   and survived a restart.
+
+With the trigger finally firing, a second, unrelated bug turned up in the workflow logic
+itself: n8n's Webhook node wraps the real POST payload inside a `.body` field (alongside
+`headers`/`params`/`query`), and the prompt-building code had been reading alert fields
+from the top level — so every test fell through to "Unknown rule"/"unknown-host" defaults
+instead of erroring, which made it look superficially like it was working. Fixed by
+unwrapping `.body`. Verified the corrected pipeline end-to-end with `curl`: a realistic
+alert payload in, a correctly-populated LLM triage verdict out, confirmed by a live
+document-count check against the `sentinel-triage` Elasticsearch index.
+
+## Phase 13 — a license wall, and a better redesign
+
+The originally planned integration point — a native Kibana rule action calling n8n
+through a Webhook connector — hit `403 Forbidden: Action type .webhook is disabled
+because your basic license does not support it`. The generic Webhook connector type is
+gated behind a paid Kibana license tier on this deployment; not something to work around
+by paying for an upgrade on a cost-conscious project.
+
+Redesigned around it rather than accepting the limitation: switched the workflow's trigger
+from Kibana-push (Webhook) to n8n-pull (a Schedule Trigger polling Elasticsearch's
+`.alerts-security.alerts-default*` index directly every 5 minutes for anything tagged
+`sentinel-sigma` in the last 10 minutes). This needs no Kibana Action configuration at
+all, sidesteps the license limitation entirely, and is arguably the more standard SOAR
+integration pattern anyway. Made the Elasticsearch write idempotent by using the alert's
+own `_id` as the triage document's ID (`PUT` instead of `POST`-with-autogenerated-id), so
+re-polling the same alert across cycles overwrites rather than duplicates.
+
+Verified via n8n's manual "Execute workflow": the schedule trigger, auth-header build, and
+Elasticsearch query all succeeded; every downstream node correctly didn't run because zero
+alerts matched — expected, since no Windows telemetry is live. Inspected the raw
+Elasticsearch response directly to confirm this was a genuine, clean "no results" answer
+(`_shards.successful: 1`, `hits.total.value: 0`) rather than a silently-broken query
+that just happens to return nothing.
+
+## Phase 14 — four more Sigma rules
+
+Installed `sigma-cli` locally (it wasn't previously set up on this machine) to validate
+rules before committing, matching the discipline established in Phase 7. Wrote four new
+`process_creation` rules: LSASS memory dump via `comsvcs.dll`'s `MiniDump` export
+(T1003.001), suspicious `certutil.exe` download/decode (T1105/T1140), scheduled-task
+persistence via `schtasks.exe` (T1053.005), and Windows Defender disabled via
+`Set-MpPreference` (T1562.001).
+
+Hit the same "invalid ATT&CK tag" quirk from the very first session again — `attack.
+defense-evasion` still fails `sigma check`'s validation against this environment's
+live-fetched MITRE dataset. Confirmed it isn't a stale-cache problem by explicitly
+clearing pysigma's ATT&CK cache and rechecking (same result). This time also found that
+even a real, correctly-formatted *technique* tag can trip the same check —
+`attack.t1562.001` is genuinely valid MITRE taxonomy but still gets flagged. The
+difference that made it worth keeping anyway: `sigma check` treats this as a non-fatal
+"issue" (exit code `0`), not a hard error, and the CI pipeline's own gate (a regex grep
+for `attack\.t[0-9]{4}`) only cares about tag *format*, not whether sigma-cli's live MITRE
+lookup happens to recognize it — so the tag was kept.
+
+Converted all five rules (the original plus four new) to EQL and Splunk locally to mirror
+CI exactly, then deployed to Kibana. Deploying surfaced a real, previously-unnoticed bug
+in `deploy.sh`: it only ever `POST`ed, which creates a rule but 409s if the `rule_id`
+already exists — meaning the script was never actually safe to rerun against an existing
+rule despite that being its stated purpose. Fixed to try create first and fall back to
+`PUT` (update) on a 409 conflict. Added `unvalidated` entries for all four new rules to
+`detections/tests/validation.yml`, and regenerated the ATT&CK coverage layer — 2 covered
+techniques became 7.
+
+## Phase 15 — commit and push
+
+Split the session's work into three separate commits rather than one — a Windows VM
+cloud-init fix, the Ollama+n8n triage pipeline, and the Sigma rules plus the `deploy.sh`
+idempotency fix — each with a message explaining the actual root cause behind the change,
+not just a summary of the diff. Pushed to `main`.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -289,15 +483,22 @@ setup's ingress design):
 | Suricata + Zeek | sentinel-wazuh | feeding Wazuh manager (verified ingesting) |
 | Shuffle SOAR | sentinel-soar | `https://100.90.159.33:3443` |
 | n8n | sentinel-soar | `http://100.90.159.33:5678` |
-| Windows telemetry target | sentinel-win-target | joining Tailscale (in progress) |
+| Ollama (`llama3.2:3b`) | sentinel-soar | internal only (n8n → `ollama:11434`) |
+| Windows telemetry target | — | torn down; fixed userdata script ready to redeploy |
 
-**Detection-as-code**: one Sigma rule, validated and converted in CI to both Elastic EQL
-and Splunk SPL, deployed live as a scheduled Kibana detection rule, currently unfed
-pending the Windows telemetry endpoint above.
+**Detection-as-code**: 5 Sigma rules (up from 1), all validated and converted in CI to
+both Elastic EQL and Splunk SPL, all deployed live as scheduled Kibana detection rules.
+ATT&CK coverage: 7 techniques. All still unfed pending the Windows telemetry endpoint.
 
-**Not yet done**: Sysmon/Winlogbeat on the Windows target; any Atomic Red Team validation
-runs; the ATT&CK coverage matrix generator has code but only one rule to report on; the
-n8n LLM triage pipeline hasn't been built; no second Sigma rule exists yet.
+**LLM triage pipeline**: n8n polls Elasticsearch every 5 minutes for `sentinel-sigma`-
+tagged alerts, has a self-hosted Ollama model assess severity/false-positive
+likelihood/recommended action, and writes the result into a `sentinel-triage`
+Elasticsearch index. Verified working end-to-end mechanically (query, auth, LLM call,
+idempotent write); not yet validated against a real fired detection.
+
+**Not yet done**: Sysmon/Winlogbeat on a Windows target (VM currently torn down); any
+Atomic Red Team validation runs; a from-Kibana push-based alternative to the n8n polling
+design, if the license is ever upgraded; more Sigma rules beyond the current five.
 
 ## Lessons worth writing about
 
@@ -315,7 +516,10 @@ n8n LLM triage pipeline hasn't been built; no second Sigma rule exists yet.
 - **"cloud-init status: done" is not proof anything actually worked.** cloud-init
   reports its own completion regardless of whether individual `runcmd` steps succeeded —
   worth explicitly verifying the thing you actually wanted (`docker --version`), not just
-  the orchestration layer's own exit status.
+  the orchestration layer's own exit status. The same lesson showed up again with
+  cloudbase-init on Windows: `Start-Process -Wait` doesn't check exit codes either, so a
+  failed `msiexec` install looked identical to a successful one until the script tried to
+  actually use the thing it was supposed to have installed.
 - **Official docker-compose files from real projects still have gaps.** Wazuh's demo
   passwords needing the image's own hashing tool, and Shuffle's OpenSearch integration
   needing an undocumented skip-TLS-verify flag, were both things no amount of reading the
@@ -325,3 +529,19 @@ n8n LLM triage pipeline hasn't been built; no second Sigma rule exists yet.
   The Kibana rule reporting no matching index is the system correctly telling the truth
   about its own state (no data source connected yet) rather than silently doing nothing
   or crashing.
+- **A platform "just working" the first time doesn't mean the mechanism is understood.**
+  The n8n webhook registered and responded correctly on the very first publish — then
+  broke on the next container restart, and stayed broken through several plausible-looking
+  fixes (`update:workflow --active=true`, `publish:workflow`, unpublish/republish via the
+  UI) before the actual root cause (a missing `webhookId`, visible only by reading the raw
+  SQLite tables) turned up. A workaround that happens to succeed once is not the same as
+  a fix that's understood well enough to expect it to keep working.
+- **SQLite's WAL mode means "just copy the .db file" can lie to you.** Reading only
+  `database.sqlite` out of a running container showed 0 rows in every table, including
+  ones known to have real data — the actual committed rows were sitting in the `-wal`
+  sidecar file, invisible unless copied alongside the main file.
+- **A paid-tier feature gate is a design constraint, not a bug to route around.** Hitting
+  Kibana's licensed Webhook connector wall could have turned into a long detour trying to
+  find a workaround; treating it as a hard boundary and redesigning the integration
+  (push → pull) around it produced a cleaner, more standard architecture than the
+  original plan would have.
