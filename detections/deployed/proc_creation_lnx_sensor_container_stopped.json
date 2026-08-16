@@ -1,0 +1,22 @@
+{
+  "rule_id": "2c4db1c0-f46e-42f4-8532-51c5548cdccb",
+  "name": "Sentinel Sensor Container Stopped, Killed, or Removed",
+  "description": "Detects the docker CLI being used to stop, kill, or remove one of this project's own Linux telemetry sensor containers (auditbeat, Suricata, Zeek) — the actual defense-impairment path in this environment, since auditbeat runs as a Docker container talking directly to the kernel audit interface rather than as a native auditd service (there is no auditctl binary or systemd auditd unit on this host to target). Linux analog of the Defender-disabled rule, retargeted to how this specific sensor is actually deployed rather than the generic auditctl/systemctl form. Source: detections/rules/proc_creation_lnx_sensor_container_stopped.yml, hand-converted from Sigma (no ecs_linux/auditd pysigma pipeline exists, so this EQL targets the real auditbeat auditd-module field shape directly). Originally written against auditctl/systemctl before live-testing found neither exists on this host; rewritten to match the real architecture, see docs/build-log.md.",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable like~ \"*/docker\" and process.title like~ (\"*stop*\", \"*kill*\", \"*rm*\") and process.title like~ (\"*sentinel-auditbeat*\", \"*sentinel-suricata*\", \"*sentinel-zeek*\")",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "high",
+  "risk_score": 73,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.defense-impairment", "attack.t1562.001", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1562/001/"
+  ],
+  "false_positives": [
+    "Legitimate maintenance (a compose redeploy, a manual sensor restart) stopping the container intentionally"
+  ],
+  "author": ["Sentinel"]
+}

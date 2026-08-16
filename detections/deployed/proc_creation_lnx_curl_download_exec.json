@@ -1,0 +1,22 @@
+{
+  "rule_id": "2a0d1a28-37ee-4218-b8b0-41de1dfb59a9",
+  "name": "Suspicious curl/wget Download to Staging Directory or Piped to Shell",
+  "description": "Detects curl or wget fetching a URL and either piping the response directly into a shell interpreter or saving it into a common malware-staging directory (/tmp, /dev/shm), a common living-off-the-land download-and-execute pattern. Linux analog of the certutil download rule. Source: detections/rules/proc_creation_lnx_curl_download_exec.yml, hand-converted from Sigma (no ecs_linux/auditd pysigma pipeline exists, so this EQL targets the real auditbeat auditd-module field shape directly).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable like~ (\"*/curl\", \"*/wget\") and process.title like~ (\"*http://*\", \"*https://*\") and process.title like~ (\"*| bash*\", \"*|bash*\", \"*| sh*\", \"*|sh*\", \"*/tmp/*\", \"*/dev/shm/*\")",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "medium",
+  "risk_score": 47,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.command-and-control", "attack.t1105", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1105/"
+  ],
+  "false_positives": [
+    "Legitimate install scripts (e.g. vendor \"curl | bash\" installers) or CI jobs staging build artifacts in /tmp"
+  ],
+  "author": ["Sentinel"]
+}

@@ -1,0 +1,22 @@
+name: sentinel-auditbeat
+
+services:
+  auditbeat:
+    image: docker.elastic.co/beats/auditbeat:9.2.1
+    container_name: sentinel-auditbeat
+    restart: unless-stopped
+    user: root
+    pid: host
+    network_mode: host
+    cap_add:
+      - AUDIT_CONTROL
+      - AUDIT_READ
+    volumes:
+      - ./auditbeat/auditbeat.yml:/usr/share/auditbeat/auditbeat.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/hostfs/proc:ro
+      - /:/hostfs:ro
+    environment:
+      - ELASTIC_URL=${ELASTIC_URL}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    command: ["-e", "--strict.perms=false"]

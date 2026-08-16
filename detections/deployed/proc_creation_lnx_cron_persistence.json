@@ -1,0 +1,22 @@
+{
+  "rule_id": "e1fb6318-60e2-4a06-8015-5a36eb999940",
+  "name": "Cron Persistence via Direct Write to Cron Directory",
+  "description": "Detects a shell command whose command line references a system cron directory (/etc/cron.d, /etc/cron.daily, /etc/cron.hourly, /etc/cron.weekly, /var/spool/cron), a common Linux persistence mechanism when combined with a redirect or file write. Linux analog of the scheduled-task-persistence rule. Source: detections/rules/proc_creation_lnx_cron_persistence.yml, hand-converted from Sigma (no ecs_linux/auditd pysigma pipeline exists, so this EQL targets the real auditbeat auditd-module field shape directly).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable like~ (\"*/bash\", \"*/sh\", \"*/dash\") and process.title like~ (\"*/etc/cron.d/*\", \"*/etc/cron.daily/*\", \"*/etc/cron.hourly/*\", \"*/etc/cron.weekly/*\", \"*/var/spool/cron/*\")",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "medium",
+  "risk_score": 47,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.persistence", "attack.privilege-escalation", "attack.t1053.003", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1053/003/"
+  ],
+  "false_positives": [
+    "Legitimate package installers (e.g. apt postinst scripts) writing cron.d entries during install"
+  ],
+  "author": ["Sentinel"]
+}

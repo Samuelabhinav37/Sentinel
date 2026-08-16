@@ -699,6 +699,83 @@ by real replayed attack telemetry (Phase 19), three by synthetic events built fo
 phase specifically because no Mordor sample exists for them. Cleaned up the test index
 and temp files afterward.
 
+## Phase 22 — Linux detection coverage, and the first genuinely live attack in this project
+
+Everything validated so far — Mordor replay, synthetic events — was recorded or
+synthetic telemetry, not a real attack run against a real host. This phase built actual
+Linux host telemetry and ATT&CK coverage to close that gap, reusing `sentinel-wazuh`
+(already live, running Suricata/Zeek) as both sensor host and attack target rather than
+spinning up a new disposable VM.
+
+**Telemetry**: deployed `auditbeat` (auditd module) as a Docker container on
+`sentinel-wazuh` — `network_mode: host`, `pid: host`, `AUDIT_CONTROL`/`AUDIT_READ`
+capabilities, watching `execve`/`execveat` — shipping into a new `auditbeat-linux` index
+on the same `sentinel-elastic` cluster. No native `auditd` package or systemd service was
+installed; auditbeat's own auditd module talks to the kernel audit netlink socket
+directly, which turned out to matter later in this phase. First real event showed
+auditd's PROCTITLE-record correlation working correctly out of the box — `process.args`,
+`process.title` (full command line), `process.executable`, and `process.parent.pid` all
+populate cleanly, unlike the raw `auditd.data.a0..aN` hex-encoded syscall arguments alone.
+Committed the index template (`infra/elasticsearch/index-templates/sentinel-auditbeat-
+linux.json`) as IaC before any real data landed under it, then deleted and let auditbeat
+recreate the index so the explicit `keyword` mappings actually applied — Elasticsearch
+index templates only affect index creation, not indices that already exist, which the
+dynamic `text`-mapped index from the first test event was a reminder of.
+
+**Detection rules**: wrote 5 Linux Sigma rules mirroring the existing Windows set by
+ATT&CK technique — obfuscated `base64 -d` execution (T1059.004, analog of encoded
+PowerShell), curl/wget download to a staging directory or piped to a shell (T1105, analog
+of certutil), direct `/etc/shadow` access (T1003.008, analog of the LSASS dump rule), cron
+persistence via a write to a system cron directory (T1053.003, analog of the scheduled-
+task rule), and a defense-impairment rule analogous to Defender-disabled. No `ecs_linux`
+pysigma pipeline exists (the installed `sigma-cli` only ships Windows/macOS/Kubernetes/
+Zeek ECS pipelines), so all 5 were hand-converted to Kibana EQL directly against the real
+auditbeat field shape — the same hand-patch precedent already established for the
+`.caseless` field and the `regex~` anchoring fix. `sigma check` flagged `attack.t1562.001`
+as an unrecognized ATT&CK ID; the bundled MITRE data in this pysigma install is missing
+the entire T1562 family and also renames the `defense-evasion` tactic to
+`defense-impairment` — a stale/nonstandard offline dataset, not a real problem with the
+tag (the Windows Defender-disabled rule uses the identical real ATT&CK ID).
+
+**Live Atomic Red Team execution — the actual point of this phase**: ran real attacker
+commands against `sentinel-wazuh` over SSH, three sourced directly from the official
+`atomic-red-team` GitHub catalog (base64-obfuscated `id` execution, `/etc/shadow` access,
+cron.d persistence — matched by ATT&CK technique, with the exact GUIDs recorded in
+`validation.yml`), two hand-run because the catalog has no Linux test for that technique
+at all (T1105 has no Linux curl/wget test, only rsync/scp/sftp and Windows-only download
+atomics; T1562 has no Linux test whatsoever). All 5 fired correctly, with **real measured
+`mttd_seconds` for the first time in this project** (131–151 seconds for the first four;
+previous Mordor/synthetic entries all recorded `null` since replayed timestamps don't
+reflect genuine detection latency). Five paired negative controls (encode without decode,
+a URL fetch with no output flag or shell pipe, a benign `/etc/passwd` read, a bare
+`crontab -l`, and — after the rewrite below — nothing that touches the sensor containers)
+were run afterward and confirmed silent across a full rule cycle.
+
+The `/etc/shadow` and cron-persistence rules each fired more than once (4× and 2×) for a
+single atomic test — not a bug. Both rules have no image filter, so they correctly caught
+every process in the underlying privilege-escalation chain (the outer shell, `sudo`
+itself, and the process `sudo` execs) that referenced the sensitive path on its command
+line. Windows process-creation telemetry is roughly one event per user action; auditd
+telemetry is one event per `execve`, so a single logical attacker action that crosses a
+privilege boundary can legitimately produce multiple real alerts. Worth knowing before
+treating alert *count* as a signal on this platform.
+
+**A real design bug, found only by trying to actually test it**: the defense-impairment
+rule was originally written like the Windows Defender-disabled rule — `auditctl -e 0` or
+`systemctl stop auditd`. Attempting to run that live failed immediately: there is no
+`auditctl` binary and no `auditd` systemd unit on `sentinel-wazuh`, because auditbeat runs
+as a Docker container talking to the kernel directly rather than as a native auditd
+service (deliberately, from earlier in this phase, to avoid two processes fighting over
+the audit netlink socket). The rule's threat model didn't match the architecture it was
+meant to protect. Rewrote it to detect the actual way this environment can be blinded —
+`docker stop|kill|rm` against the project's own sensor containers (`sentinel-auditbeat`,
+`sentinel-suricata`, `sentinel-zeek`) — redeployed, and validated live: `docker stop
+sentinel-auditbeat`, confirmed the alert fired (74s MTTD), then `docker start
+sentinel-auditbeat` immediately to restore the sensor. This is the same lesson as the
+`.caseless` field and the `regex~` anchoring bug from earlier phases, generalized: a
+detection rule is a claim about how a specific system actually works, and the only way to
+find out it's wrong is to actually try to trigger it.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -713,18 +790,24 @@ setup's ingress design):
 | n8n | sentinel-soar | `http://100.90.159.33:5678` |
 | Ollama (`llama3.2:3b`) | sentinel-soar | internal only (n8n → `ollama:11434`) |
 | Windows telemetry target | — | torn down; fixed userdata script ready to redeploy |
+| auditbeat (Linux telemetry) | sentinel-wazuh | Docker container, host network, feeding `auditbeat-linux` on sentinel-elastic |
 
-**Detection-as-code**: 5 Sigma rules, all validated and converted in CI to both Elastic
-EQL and Splunk SPL, all deployed live as scheduled Kibana detection rules. ATT&CK
-coverage: 7 techniques. All 5 are now **confirmed firing correctly** — two against real
-replayed attack telemetry from OTRF Mordor (LSASS/comsvcs, scheduled-task creation), and
-three against hand-built synthetic events (encoded PowerShell, certutil, Defender
-disabled — no Mordor sample exists for these). The synthetic-event pass also caught and
-fixed a real bug: the encoded-PowerShell rule's compiled EQL query could never have
-matched real data either, due to an unwrapped `regex~` anchoring gap in the `sigma-cli`
-`ecs_windows` backend plus an invalid `(?i)` flag (see Phase 21). Every rule's validation
-now also has an explicit negative control confirming it doesn't fire on benign use of the
-same tool.
+**Detection-as-code**: 10 Sigma rules (5 Windows, 5 Linux), all deployed live as
+scheduled Kibana detection rules. ATT&CK coverage: 12 techniques. All 10 are now
+**confirmed firing correctly**. The 5 Windows rules were validated via a mix of real
+replayed attack telemetry from OTRF Mordor (LSASS/comsvcs, scheduled-task creation) and
+hand-built synthetic events (encoded PowerShell, certutil, Defender disabled — no Mordor
+sample exists for these); the synthetic-event pass caught and fixed a real bug in the
+encoded-PowerShell rule's `regex~` anchoring (see Phase 21). The 5 Linux rules were
+validated with **genuinely live Atomic Red Team execution** against `sentinel-wazuh` (see
+Phase 22) — three sourced from the official atomic-red-team catalog, two hand-run because
+the catalog has no Linux test for that technique — and produced this project's first real
+measured `mttd_seconds` values (74–151s). That same live-testing pass caught a real
+architecture bug: a Linux defense-impairment rule modeled on `auditctl`/`systemctl` was
+untestable because neither exists on a host where auditbeat runs as a Docker container
+talking to the kernel directly; it was rewritten to detect `docker stop/kill/rm` against
+the project's own sensor containers instead. Every rule's validation has an explicit
+negative control confirming it doesn't fire on benign use of the same tool.
 
 **LLM triage pipeline**: n8n polls Elasticsearch every 5 minutes for `sentinel-sigma`-
 tagged alerts, has a self-hosted Ollama model assess severity/false-positive
@@ -741,16 +824,16 @@ just this replay. Both templates are now committed as reproducible IaC under
 `infra/elasticsearch/index-templates/` (pulled from the live cluster and verified via a
 round-trip redeploy, see Phase 20), not just ad-hoc `curl` commands.
 
-`detections/tests/validation.yml` now has all 5 rules as `true_positive` — the notes on
-each entry are explicit about whether the evidence is a real Mordor replay or a
-hand-built synthetic event, since those are not equally strong evidence.
+`detections/tests/validation.yml` now has all 10 rules as `true_positive` — the notes on
+each entry are explicit about the strength of evidence behind it (real Mordor replay,
+hand-built synthetic event, or genuinely live Atomic Red Team execution, weakest to
+strongest), and the 5 Linux entries carry this project's first real measured
+`mttd_seconds` values instead of `null`.
 
-**Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down);
-live Atomic Red Team runs against either a real Windows host or a disposable Linux VM
-(the better option for Linux coverage, identified but not yet built) — everything
-validated so far has been replayed or synthetic, not a live attack execution; a
-from-Kibana push-based alternative to the n8n polling design, if the license is ever
-upgraded.
+**Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down) and
+a live Atomic Red Team run against it — the Windows side is still validated via replay/
+synthetic events only, now that the Linux side has genuinely live coverage; a from-Kibana
+push-based alternative to the n8n polling design, if the license is ever upgraded.
 
 ## Lessons worth writing about
 
@@ -816,3 +899,19 @@ upgraded.
   processing only 25% of a 4-item batch — the exact kind of bug that looks like success
   in every log and every "it worked!" moment until multiple items are ever in flight at
   once.
+- **A detection rule modeled on the wrong deployment mechanism will pass every check
+  except the one that matters.** The Linux defense-impairment rule (`auditctl -e 0`,
+  `systemctl stop auditd`) parsed cleanly, deployed cleanly, and ran on schedule without
+  error — Kibana has no way to know the binary and the systemd unit it references don't
+  exist on the target host. Only trying to actually execute the attacker action surfaced
+  that auditbeat runs as a Docker container talking to the kernel directly, with neither.
+  Synthetic events can't catch this class of bug either, since a hand-built event doesn't
+  care whether the tool that would have produced it is even installed — only a live
+  attempt against the real host does.
+- **One logical attacker action can legitimately produce more than one real alert.**
+  Windows process-creation telemetry is close to one event per user action; Linux auditd
+  telemetry is one event per `execve`, so a command that crosses a privilege boundary
+  (`sudo cat /etc/shadow`) generates a separate audit record for the shell, for `sudo`,
+  and for the process `sudo` execs — and an image-agnostic rule correctly fires on all of
+  them. Alert count isn't a reliable proxy for "number of attacker actions" across
+  platforms with different telemetry granularity.

@@ -48,3 +48,48 @@
   mttd_seconds: null
   last_run: "2026-08-16"
   notes: "No Mordor sample and no live Windows target, so validated with a hand-built synthetic event (detections/scripts/inject_synthetic_events.py) rather than real recorded attack telemetry — weaker evidence than a Mordor replay, treat accordingly. Fired correctly on its normal 5-min Kibana schedule and was correctly triaged by the n8n/Ollama pipeline (severity: high); a benign Set-MpPreference -ExclusionPath negative control did not trigger a false positive."
+
+- rule_id: bbd6e18e-8106-40fe-a150-f4bcfbf3c9ca
+  rule_file: rules/proc_creation_lnx_base64_decode_exec.yml
+  technique: T1059.004
+  atomic_test: "Obfuscated command line scripts (atomic-red-team T1059.004, GUID 5bec4cc8-f41e-437b-b417-33ff60acf9af)"
+  status: true_positive
+  mttd_seconds: 149
+  last_run: "2026-08-16"
+  notes: "First genuinely live Atomic Red Team execution in this project (everything before this was Mordor replay or synthetic events) — ran the real official atomic-red-team command against sentinel-wazuh (base64-encode the string 'id', decode it, pipe into /bin/bash) over SSH. Fired correctly on its normal schedule; mttd_seconds is a real measured value (command executed 20:15:12Z, alert start 20:17:41Z), the first non-null MTTD this project has recorded. Negative control (base64 -w 0 with no decode flag) did not trigger a false positive."
+
+- rule_id: 2a0d1a28-37ee-4218-b8b0-41de1dfb59a9
+  rule_file: rules/proc_creation_lnx_curl_download_exec.yml
+  technique: T1105
+  atomic_test: "Hand-run live command (not from the official atomic-red-team catalog — its T1105 rule has no Linux curl/wget download test, only rsync/scp/sftp and Windows-only download atomics)"
+  status: true_positive
+  mttd_seconds: 131
+  last_run: "2026-08-16"
+  notes: "Live (not synthetic) execution: curl -s <url> -o /tmp/x.sh against sentinel-wazuh, a real download-to-staging-directory pattern even though the specific command isn't sourced from the ART catalog. Fired correctly on its normal schedule (command executed 20:15:36Z, alert start 20:17:47Z). Negative control (curl -s https://example.com with no output flag/pipe-to-shell) did not trigger a false positive."
+
+- rule_id: 2c4db1c0-f46e-42f4-8532-51c5548cdccb
+  rule_file: rules/proc_creation_lnx_sensor_container_stopped.yml
+  technique: T1562.001
+  atomic_test: "Hand-run live command: docker stop sentinel-auditbeat (not from the official atomic-red-team catalog — it has no T1562.001 Linux test at all)"
+  status: true_positive
+  mttd_seconds: 74
+  last_run: "2026-08-16"
+  notes: "This rule was originally written against auditctl -e 0 / systemctl stop auditd, mirroring the Windows Defender-disabled rule's shape — but live-testing found neither auditctl nor a systemd auditd unit exists on sentinel-wazuh, because auditbeat runs as a Docker container talking directly to the kernel audit interface, not as a native auditd service. That's a real architecture gap the earlier synthetic-only validation approach would never have caught. Rewrote the rule to detect the actual defense-impairment path in this environment (docker stop/kill/rm against the project's own sensor containers), redeployed, then validated live: docker stop sentinel-auditbeat executed 20:31:24Z, alert start 20:32:37Z, then docker start sentinel-auditbeat immediately after to restore the sensor. See docs/build-log.md for the full story."
+
+- rule_id: 09c0fc78-6218-43c1-97ff-d023b7fdfa6a
+  rule_file: rules/proc_creation_lnx_shadow_file_access.yml
+  technique: T1003.008
+  atomic_test: "Access /etc/shadow (Local) (atomic-red-team T1003.008, GUID 3723ab77-c546-403c-8fb4-bb577033b235)"
+  status: true_positive
+  mttd_seconds: 151
+  last_run: "2026-08-16"
+  notes: "Live execution of the real ART command (sudo cat /etc/shadow > /tmp/T1003.008.txt; cat /tmp/T1003.008.txt) against sentinel-wazuh. Fired 4 times for this single atomic test, not once — the rule has no image filter (unlike the other Linux rules), so it correctly caught every process in the sudo privilege-escalation chain (the outer shell, sudo itself, and the sudo-exec'd cat) that referenced /etc/shadow on its command line. This is a real difference from Windows process-creation telemetry (1 user action = 1 event there): auditd captures every execve in a privilege-boundary chain, so one logical attacker action can legitimately produce multiple real alerts. mttd_seconds measured from the first of the four (command executed 20:15:19Z, first alert start 20:17:50Z). Negative control (cat /etc/passwd) did not trigger a false positive."
+
+- rule_id: e1fb6318-60e2-4a06-8015-5a36eb999940
+  rule_file: rules/proc_creation_lnx_cron_persistence.yml
+  technique: T1053.003
+  atomic_test: "Cron - Add script to /etc/cron.d folder (atomic-red-team T1053.003, GUID 078e69eb-d9fb-450e-b9d0-2e118217c846)"
+  status: true_positive
+  mttd_seconds: 139
+  last_run: "2026-08-16"
+  notes: "Live execution of the real ART command (sudo sh -c 'echo \"*/5 * * * * root ...\" > /etc/cron.d/persistevil') against sentinel-wazuh, then removed the file immediately after. Fired twice for this one atomic test (the outer sudo-wrapping shell and the sudo-exec'd sh -c both referenced the cron.d path), same underlying reason as the /etc/shadow rule above. mttd_seconds measured from the first alert (command executed 20:15:25Z, first alert start 20:17:44Z). Negative control (crontab -l, benign listing) did not trigger a false positive."

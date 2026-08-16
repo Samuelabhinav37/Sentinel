@@ -1,0 +1,23 @@
+{
+  "rule_id": "bbd6e18e-8106-40fe-a150-f4bcfbf3c9ca",
+  "name": "Obfuscated Command Execution via base64 -d",
+  "description": "Detects use of the base64 utility with a decode flag, a common way to smuggle an obfuscated payload past static detection before piping it into a shell. Linux analog of the encoded-PowerShell rule. Source: detections/rules/proc_creation_lnx_base64_decode_exec.yml, hand-converted from Sigma (no ecs_linux/auditd pysigma pipeline exists, so this EQL targets the real auditbeat auditd-module field shape directly).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable like~ \"*/base64\" and process.title like~ (\"*-d*\", \"*--decode*\")",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "medium",
+  "risk_score": 47,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.execution", "attack.defense-impairment", "attack.t1059.004", "attack.t1027", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1059/004/",
+    "https://attack.mitre.org/techniques/T1027/"
+  ],
+  "false_positives": [
+    "Package install/build scripts that legitimately base64-decode an embedded asset"
+  ],
+  "author": ["Sentinel"]
+}

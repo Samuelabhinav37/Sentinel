@@ -1,0 +1,50 @@
+{
+  "index_patterns": ["auditbeat-linux", "auditbeat-*"],
+  "priority": 200,
+  "template": {
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "event": {
+          "properties": {
+            "action": { "type": "keyword" },
+            "category": { "type": "keyword" }
+          }
+        },
+        "host": {
+          "properties": {
+            "name": { "type": "keyword" }
+          }
+        },
+        "user": {
+          "properties": {
+            "name": { "type": "keyword" }
+          }
+        },
+        "auditd": {
+          "properties": {
+            "data": {
+              "properties": {
+                "syscall": { "type": "keyword" }
+              }
+            }
+          }
+        },
+        "process": {
+          "properties": {
+            "executable": { "type": "keyword" },
+            "name": { "type": "keyword" },
+            "title": { "type": "keyword" },
+            "args": { "type": "keyword" },
+            "working_directory": { "type": "keyword" },
+            "parent": {
+              "properties": {
+                "pid": { "type": "long" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

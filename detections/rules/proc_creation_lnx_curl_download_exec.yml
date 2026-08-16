@@ -1,0 +1,39 @@
+title: Suspicious curl/wget Download to Staging Directory or Piped to Shell
+id: 2a0d1a28-37ee-4218-b8b0-41de1dfb59a9
+status: experimental
+description: >
+  Detects curl or wget fetching a URL and either piping the response directly
+  into a shell interpreter or saving it into a common malware-staging
+  directory (/tmp, /dev/shm), a common living-off-the-land download-and-
+  execute pattern. Linux analog of the certutil download rule.
+references:
+  - https://attack.mitre.org/techniques/T1105/
+author: Sentinel
+date: 2026-08-16
+tags:
+  - attack.command-and-control
+  - attack.t1105
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection_image:
+    Image|endswith:
+      - '/curl'
+      - '/wget'
+  selection_url:
+    CommandLine|contains:
+      - 'http://'
+      - 'https://'
+  selection_sink:
+    CommandLine|contains:
+      - '| bash'
+      - '|bash'
+      - '| sh'
+      - '|sh'
+      - '/tmp/'
+      - '/dev/shm/'
+  condition: all of selection_*
+falsepositives:
+  - Legitimate install scripts (e.g. vendor "curl | bash" installers) or CI jobs staging build artifacts in /tmp
+level: medium

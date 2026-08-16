@@ -1,0 +1,31 @@
+title: Obfuscated Command Execution via base64 -d
+id: bbd6e18e-8106-40fe-a150-f4bcfbf3c9ca
+status: experimental
+description: >
+  Detects use of the base64 utility with a decode flag, a common way to
+  smuggle an obfuscated payload past static detection before piping it into
+  a shell. Linux analog of the encoded-PowerShell rule.
+references:
+  - https://attack.mitre.org/techniques/T1059/004/
+  - https://attack.mitre.org/techniques/T1027/
+author: Sentinel
+date: 2026-08-16
+tags:
+  - attack.execution
+  - attack.defense-impairment
+  - attack.t1059.004
+  - attack.t1027
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection_image:
+    Image|endswith: '/base64'
+  selection_flags:
+    CommandLine|contains:
+      - '-d'
+      - '--decode'
+  condition: all of selection_*
+falsepositives:
+  - Package install/build scripts that legitimately base64-decode an embedded asset
+level: medium

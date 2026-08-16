@@ -1,0 +1,22 @@
+{
+  "rule_id": "09c0fc78-6218-43c1-97ff-d023b7fdfa6a",
+  "name": "Direct Access to /etc/shadow",
+  "description": "Detects a process directly referencing /etc/shadow on its command line, a common way to read or copy out hashed local credentials for offline cracking. Linux analog of the LSASS/comsvcs dump rule. Source: detections/rules/proc_creation_lnx_shadow_file_access.yml, hand-converted from Sigma (no ecs_linux/auditd pysigma pipeline exists, so this EQL targets the real auditbeat auditd-module field shape directly).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.title like~ \"*/etc/shadow*\"",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "high",
+  "risk_score": 73,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.credential-access", "attack.t1003.008", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1003/008/"
+  ],
+  "false_positives": [
+    "Legitimate backup/configuration-management tooling that reads /etc/shadow as root"
+  ],
+  "author": ["Sentinel"]
+}
