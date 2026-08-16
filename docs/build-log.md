@@ -471,6 +471,137 @@ cloud-init fix, the Ollama+n8n triage pipeline, and the Sigma rules plus the `de
 idempotency fix — each with a message explaining the actual root cause behind the change,
 not just a summary of the diff. Pushed to `main`.
 
+## Phase 16 — deciding to stop fighting the Windows VM
+
+After the fixed Windows VM was torn down (end of Phase 9), the plan was to redeploy it
+once picked back up. Instead, after repeated Windows-VM boot friction across two
+sessions, made the call to deviate from a live Windows VM entirely rather than keep
+spending time/cost on cloud-init bootstrapping — and researched real alternatives
+instead of guessing.
+
+Checked what actually exists, not just what sounds plausible:
+
+- **OTRF Security-Datasets ("Mordor")** — a library of real, pre-recorded attack
+  telemetry mapped to ATT&CK, designed specifically for replaying into a SIEM to
+  validate detections without live infrastructure. Checked its actual GitHub tree via
+  the API rather than trusting a description: 165 Windows atomic datasets vs only 2
+  for Linux (`sh_binary_padding_dd`, `sh_arp_cache`) and zero for macOS — confirmed this
+  is a Windows-first resource, not evenly cross-platform.
+- **AIT Log Data Set (AIT-LDS)**, Zenodo-hosted, ground-truth-annotated multi-host
+  Linux attack simulations — a real option for Linux, though Sentinel already has three
+  live Linux VMs with Wazuh agents, so running actual Atomic Red Team atomics against a
+  disposable Linux box would give genuine telemetry with zero new infrastructure, which
+  beats a static replay dataset for Linux specifically.
+- **DetectionLab** — purpose-built for exactly this (Windows domain + Sysmon +
+  Winlogbeat), but confirmed via its own GitHub activity that it's been unmaintained
+  since 2023 (still weekly-CI-tested, so it currently builds, but a real staleness risk
+  for a dependency).
+- **macOS** — no viable free option found anywhere in the ecosystem. Red Team
+  Automation (RTA) can generate real macOS telemetry, but only by actually running on
+  macOS hardware; cloud macOS (AWS EC2 Mac) requires a 24-hour minimum dedicated-host
+  allocation with real cost. Honest conclusion: macOS coverage is out of scope for this
+  project unless a physical Mac becomes available to test on directly.
+
+Decision: replay Mordor datasets for Windows now (fastest path to actually validating
+the 5 deployed Sigma rules), treat live Atomic Red Team on a disposable Linux VM as the
+better Linux option later, and drop macOS entirely rather than force a weak answer.
+
+## Phase 17 — building the Mordor replay pipeline
+
+Matched Mordor's dataset catalog against the 5 deployed rules by keyword-searching the
+repo's file tree: found exact matches for two —
+`credential_access/host/psh_lsass_memory_dump_comsvcs.zip` (T1003.001) and
+`lateral_movement/host/schtask_create.zip` (T1053.005). No ready-made sample existed for
+the encoded-PowerShell, certutil, or Defender-disabled rules.
+
+Downloaded and inspected a sample file before writing any transform code, rather than
+assuming its shape: Mordor datasets are raw Windows Event Log JSON (`NewProcessName`,
+`CommandLine`, `EventID: 4688` for Security-log events; `Image`, `CommandLine`,
+`EventID: 1` for Sysmon), not ECS — so a mapping layer was needed before this data could
+mean anything to the ECS-based EQL queries the rules actually run.
+
+Wrote `detections/scripts/replay_mordor_dataset.py`: unzips a dataset, maps the handful
+of fields the rules query (`process.executable`, `process.command_line`, `host.name`,
+`@timestamp`) into ECS-ish documents, and bulk-indexes them into Elasticsearch via the
+`_bulk` API. Timestamps are stamped as "now" rather than preserved from the dataset's
+original (multi-year-old) `TimeCreated` — the point of the replay is to exercise the
+live rule schedule and the n8n polling window exactly as they'd see a real alert, not to
+archive historical events.
+
+## Phase 18 — four real bugs, found only by actually firing live alerts
+
+Every mechanical test up to this point (single synthetic webhook calls, zero-result
+schedule executions) had exercised the pipeline's plumbing without ever exercising its
+actual detection logic end-to-end. Replaying real attack data immediately surfaced four
+genuine, previously-invisible bugs — in order:
+
+**1. EQL's `.caseless` isn't what it looks like.** The first replay attempt failed all
+5 rules with `verification_exception: Unknown column [process.executable.caseless]`.
+Traced it to dynamic mapping: my hand-rolled index had inferred `process.executable` as
+`text` (with an auto `.keyword` sub-field), not `keyword` — this is exactly what
+Winlogbeat's real ECS template would have prevented, so it would have hit real telemetry
+too, not just this replay. Fixed with an explicit index template mapping the field as
+`keyword`. That still didn't work — `.caseless` turned out not to be built-in EQL syntax
+at all; it's a literal field name that Elastic Agent's official Windows integration
+provides via its own component templates (a case-normalized runtime field), which
+pysigma's `ecs_windows` pipeline assumes exists. Since this project uses plain
+Winlogbeat, not Elastic Agent + Fleet, that field never existed. Fixed by adding it
+explicitly as an Elasticsearch **runtime field** (`process.executable.caseless`,
+computed via a Painless passthrough script) to the index template. This is arguably the
+highest-value bug of the session — all 5 rules would have silently never fired against
+real Windows telemetry either, for a reason that had nothing to do with the Sigma source
+or the EQL conversion being wrong.
+
+**2. n8n's Code node default silently drops items.** With the mapping fixed, rules
+started generating real alerts — but only one ever got triaged per batch, with zero
+errors logged. Root-caused by reading the workflow's stored JSON directly out of n8n's
+SQLite database: both Code nodes (`Build Prompt`, `Parse Triage + Auth`) had been running
+in n8n's default `runOnceForAllItems` mode, where `$input.first()` only ever looks at
+item 0 — silently discarding every other item in the batch as valid-looking, no-error
+behavior. A single-alert webhook test (session's earlier validation) could never have
+caught this; it only showed up once multiple real alerts existed in one poll cycle.
+Fixed by explicitly setting `"mode": "runOnceForEachItem"` on both nodes.
+
+**3. Each-item mode has a different return shape.** Switching modes immediately broke
+both nodes with `A 'json' property isn't an object` — `runOnceForAllItems` expects
+`return [{ json: {...} }]` (an array of items), but `runOnceForEachItem` expects a single
+`return { json: {...} }` (no array). Fixed both nodes' return statements.
+
+**4. Sequential batch inference needs more timeout headroom.** With items now actually
+processing one at a time, a batch of several items hit `ECONNABORTED` against Ollama at
+the configured 120-second timeout — plausible under CPU-only inference with several
+sequential calls, especially with a possible cold-start model reload after Ollama had
+been idle. Bumped the HTTP Request timeout to 300 seconds.
+
+**5. Dynamic date-detection locked in the wrong type from the very first test doc.**
+Even with the above fixed, writes to `sentinel-triage` started failing with
+`document_parsing_exception: failed to parse field [alert.winlog.event_data.TimeCreated]
+of type [date]` — the index's dynamic mapping had inferred that nested field as `date`
+from an early ad-hoc test document, and real Mordor data uses a different date-string
+format that doesn't parse against whatever got locked in. Fixed with an index template
+setting `"date_detection": false` for the `sentinel-triage*` pattern — the embedded raw
+alert data doesn't need to be date-queryable, so treating those fields as safe untyped
+values avoids this whole class of problem going forward.
+
+## Phase 19 — clean end-to-end confirmation
+
+After all five fixes, ran one final clean cycle: deleted and re-replayed the two Mordor
+datasets, let the Kibana rules fire naturally on their own 5-minute schedule, and let
+n8n's poller pick up the results on its own schedule — no manual triggering. Result: 4
+real alerts (2× LSASS/comsvcs, 2× scheduled-task creation) generated by Kibana, all 4
+picked up and correctly triaged by Ollama in a single execution with zero errors:
+
+- 2× `severity: high` — "use of rundll32.exe to call the undocumented MiniDump export of
+  comsvcs.dll against the LSASS process, a high-risk living-off-the-land technique"
+- 2× `severity: medium` — correctly identified the `schtasks.exe /create` persistence
+  behavior, one summary even correctly extracting the affected hostname
+  (`WORKSTATION5.theshire.local`) from the raw alert data
+
+This is the first time in the project that the full chain — detection rule fires on
+real attack telemetry → alert lands in Elasticsearch → n8n polls it → a local LLM
+produces an accurate, correctly-scoped triage verdict → result is written back — has
+actually been observed working, rather than assumed to work from unit-level checks.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -486,19 +617,33 @@ setup's ingress design):
 | Ollama (`llama3.2:3b`) | sentinel-soar | internal only (n8n → `ollama:11434`) |
 | Windows telemetry target | — | torn down; fixed userdata script ready to redeploy |
 
-**Detection-as-code**: 5 Sigma rules (up from 1), all validated and converted in CI to
-both Elastic EQL and Splunk SPL, all deployed live as scheduled Kibana detection rules.
-ATT&CK coverage: 7 techniques. All still unfed pending the Windows telemetry endpoint.
+**Detection-as-code**: 5 Sigma rules, all validated and converted in CI to both Elastic
+EQL and Splunk SPL, all deployed live as scheduled Kibana detection rules. ATT&CK
+coverage: 7 techniques. Two of the five (LSASS/comsvcs, scheduled-task creation) have now
+been **confirmed firing correctly against real attack telemetry** (replayed from OTRF
+Mordor, not live-generated) — the other three (encoded PowerShell, certutil, Defender
+disabled) are deployed and mechanically verified but have no matching Mordor sample yet,
+so still await either a live Windows host or a hand-built synthetic event.
 
 **LLM triage pipeline**: n8n polls Elasticsearch every 5 minutes for `sentinel-sigma`-
 tagged alerts, has a self-hosted Ollama model assess severity/false-positive
 likelihood/recommended action, and writes the result into a `sentinel-triage`
-Elasticsearch index. Verified working end-to-end mechanically (query, auth, LLM call,
-idempotent write); not yet validated against a real fired detection.
+Elasticsearch index. **Confirmed working fully end-to-end against real alerts**,
+including correct multi-item batch handling — 4 real alerts in one poll cycle, all 4
+triaged accurately, zero errors.
 
-**Not yet done**: Sysmon/Winlogbeat on a Windows target (VM currently torn down); any
-Atomic Red Team validation runs; a from-Kibana push-based alternative to the n8n polling
-design, if the license is ever upgraded; more Sigma rules beyond the current five.
+**Replay tooling**: `detections/scripts/replay_mordor_dataset.py` plus two Elasticsearch
+index templates (`sentinel-windows-ecs` for the `winlogbeat-*`/`logs-windows.*` pattern,
+`sentinel-triage` for the triage output index) — both templates fix real mapping bugs
+that would otherwise have surfaced again against genuine future Winlogbeat data, not
+just this replay.
+
+**Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down);
+Atomic Red Team validation for the 3 rules without a matching Mordor sample; live Atomic
+Red Team runs against a disposable Linux VM (the better option for Linux coverage,
+identified but not yet built); `detections/tests/validation.yml` still needs updating
+with the real true-positive results from Phase 19; a from-Kibana push-based alternative
+to the n8n polling design, if the license is ever upgraded.
 
 ## Lessons worth writing about
 
@@ -545,3 +690,22 @@ design, if the license is ever upgraded; more Sigma rules beyond the current fiv
   find a workaround; treating it as a hard boundary and redesigning the integration
   (push → pull) around it produced a cleaner, more standard architecture than the
   original plan would have.
+- **Mechanical tests and real tests catch different bugs.** Every check before Phase 18
+  (synthetic single-alert webhook calls, zero-result schedule executions returning clean
+  empty responses) genuinely passed — and every single one of them would have missed all
+  four bugs found by replaying real, multi-event attack data. "The pipeline runs without
+  erroring" and "the pipeline produces correct results under realistic load" are different
+  claims; only the second one is what actually matters, and only real data with more than
+  one item in flight exposed the gap.
+- **A field that "should just work" because it's `keyword`-typed can still not exist.**
+  `.caseless` looked like standard EQL case-insensitivity syntax and even produced a
+  plausible-sounding error ("Unknown column") that pointed toward a mapping problem —
+  which was real, but fixing it wasn't enough. The deeper issue was that the field itself
+  is a convention from a specific ingestion pipeline (Elastic Agent's Windows integration)
+  that this project never installed, not a language feature. Worth checking what actually
+  provides a field before assuming a syntax fix will make it resolve.
+- **A no-code platform's "safe default" can be a silent data-loss default.** n8n's Code
+  node defaulting to `runOnceForAllItems` never once threw an error while quietly
+  processing only 25% of a 4-item batch — the exact kind of bug that looks like success
+  in every log and every "it worked!" moment until multiple items are ever in flight at
+  once.

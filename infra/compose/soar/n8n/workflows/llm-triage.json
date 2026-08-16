@@ -65,7 +65,8 @@
       "typeVersion": 2,
       "position": [880, 0],
       "parameters": {
-        "jsCode": "// Each item here is one Elasticsearch hit: { _index, _id, _source: {...} }\nconst hit = $input.first().json;\nconst alert = hit._source || hit;\nconst alertId = hit._id;\n\nconst ruleName = alert.rule_name\n  || alert['kibana.alert.rule.name']\n  || (alert.rule && alert.rule.name)\n  || 'Unknown rule';\n\nconst host = alert.host_name\n  || alert['host.name']\n  || (alert.host && alert.host.name)\n  || 'unknown-host';\n\nconst description = alert.description\n  || alert['kibana.alert.rule.description']\n  || (alert.rule && alert.rule.description)\n  || '';\n\nconst raw = JSON.stringify(alert).slice(0, 3000);\n\nconst prompt = [\n  'You are a SOC triage analyst. Read the detection alert below and respond',\n  'with ONLY a single JSON object, no other text, matching this schema:',\n  '{\"severity\": \"low|medium|high|critical\", \"false_positive_likelihood\": \"low|medium|high\", \"summary\": \"one sentence\", \"recommended_action\": \"one sentence\"}',\n  '',\n  'Alert:',\n  'Rule: ' + ruleName,\n  'Host: ' + host,\n  'Description: ' + description,\n  'Raw fields (truncated): ' + raw\n].join('\\n');\n\nreturn [{\n  json: {\n    prompt,\n    alert_id: alertId,\n    original_alert: alert\n  }\n}];"
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Each item here is one Elasticsearch hit: { _index, _id, _source: {...} }\nconst hit = $json;\nconst alert = hit._source || hit;\nconst alertId = hit._id;\n\nconst ruleName = alert.rule_name\n  || alert['kibana.alert.rule.name']\n  || (alert.rule && alert.rule.name)\n  || 'Unknown rule';\n\nconst host = alert.host_name\n  || alert['host.name']\n  || (alert.host && alert.host.name)\n  || 'unknown-host';\n\nconst description = alert.description\n  || alert['kibana.alert.rule.description']\n  || (alert.rule && alert.rule.description)\n  || '';\n\nconst raw = JSON.stringify(alert).slice(0, 3000);\n\nconst prompt = [\n  'You are a SOC triage analyst. Read the detection alert below and respond',\n  'with ONLY a single JSON object, no other text, matching this schema:',\n  '{\"severity\": \"low|medium|high|critical\", \"false_positive_likelihood\": \"low|medium|high\", \"summary\": \"one sentence\", \"recommended_action\": \"one sentence\"}',\n  '',\n  'Alert:',\n  'Rule: ' + ruleName,\n  'Host: ' + host,\n  'Description: ' + description,\n  'Raw fields (truncated): ' + raw\n].join('\\n');\n\nreturn {\n  json: {\n    prompt,\n    alert_id: alertId,\n    original_alert: alert\n  }\n};"
       }
     },
     {
@@ -81,7 +82,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ { \"model\": \"llama3.2:3b\", \"prompt\": $json.prompt, \"stream\": false, \"format\": \"json\" } }}",
         "options": {
-          "timeout": 120000
+          "timeout": 300000
         }
       }
     },
@@ -92,7 +93,8 @@
       "typeVersion": 2,
       "position": [1320, 0],
       "parameters": {
-        "jsCode": "const llmOutput = $input.first().json;\nconst original = $('Build Prompt').item.json.original_alert;\nconst alertId = $('Build Prompt').item.json.alert_id;\n\nlet triage;\ntry {\n  triage = JSON.parse(llmOutput.response);\n} catch (e) {\n  triage = {\n    severity: 'unknown',\n    false_positive_likelihood: 'unknown',\n    summary: 'LLM output could not be parsed as JSON',\n    recommended_action: 'manual review',\n    raw_llm_output: llmOutput.response\n  };\n}\n\nconst doc = {\n  '@timestamp': new Date().toISOString(),\n  alert_id: alertId,\n  alert: original,\n  triage\n};\n\nconst auth = 'Basic ' + Buffer.from('elastic:' + $env.N8N_ELASTIC_PASSWORD).toString('base64');\n\nreturn [{ json: { doc, auth, alertId } }];"
+        "mode": "runOnceForEachItem",
+        "jsCode": "const llmOutput = $json;\nconst original = $('Build Prompt').item.json.original_alert;\nconst alertId = $('Build Prompt').item.json.alert_id;\n\nlet triage;\ntry {\n  triage = JSON.parse(llmOutput.response);\n} catch (e) {\n  triage = {\n    severity: 'unknown',\n    false_positive_likelihood: 'unknown',\n    summary: 'LLM output could not be parsed as JSON',\n    recommended_action: 'manual review',\n    raw_llm_output: llmOutput.response\n  };\n}\n\nconst doc = {\n  '@timestamp': new Date().toISOString(),\n  alert_id: alertId,\n  alert: original,\n  triage\n};\n\nconst auth = 'Basic ' + Buffer.from('elastic:' + $env.N8N_ELASTIC_PASSWORD).toString('base64');\n\nreturn { json: { doc, auth, alertId } };"
       }
     },
     {
