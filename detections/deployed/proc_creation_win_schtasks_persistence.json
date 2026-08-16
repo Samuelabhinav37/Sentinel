@@ -1,0 +1,22 @@
+{
+  "rule_id": "4e6b8d1a-2f5c-4b9e-a3d7-8c1f5a9e2b6d",
+  "name": "Scheduled Task Creation via schtasks.exe",
+  "description": "Detects use of schtasks.exe with /create to register a new scheduled task, a common persistence mechanism. High-signal when combined with an unusual parent process or a task action pointing at a script interpreter. Source: detections/rules/proc_creation_win_schtasks_persistence.yml, compiled from Sigma via sigma-cli (eql, ecs_windows pipeline).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable.caseless:\"*\\\\schtasks.exe\" and (process.command_line like~ (\"*/create*\", \"*-create*\"))",
+  "index": ["winlogbeat-*", "logs-windows.*"],
+  "severity": "medium",
+  "risk_score": 47,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.persistence", "attack.privilege-escalation", "attack.t1053.005", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1053/005/"
+  ],
+  "false_positives": [
+    "Legitimate software installers registering maintenance or update tasks"
+  ],
+  "author": ["Sentinel"]
+}

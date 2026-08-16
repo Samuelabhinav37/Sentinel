@@ -1,0 +1,32 @@
+title: Suspicious Certutil Download or Decode
+id: 9d3f1a6b-5c2e-4f8a-b1d3-6a9c4e7f2b5d
+status: experimental
+description: >
+  Detects certutil.exe being used with -urlcache or -decode, a common
+  living-off-the-land technique to download a remote file or decode a
+  base64-smuggled payload using a signed Microsoft binary.
+references:
+  - https://attack.mitre.org/techniques/T1105/
+  - https://attack.mitre.org/techniques/T1140/
+author: Sentinel
+date: 2026-08-15
+tags:
+  - attack.command-and-control
+  - attack.t1105
+  - attack.t1140
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_image:
+    Image|endswith: '\certutil.exe'
+  selection_flags:
+    CommandLine|contains:
+      - '-urlcache'
+      - '/urlcache'
+      - '-decode'
+      - '/decode'
+  condition: all of selection_*
+falsepositives:
+  - Rare legitimate certificate-management scripts that happen to use these flags
+level: medium

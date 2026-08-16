@@ -1,0 +1,68 @@
+{
+  "name": "Sentinel Detection Coverage",
+  "versions": {
+    "attack": "15",
+    "navigator": "5.1.0",
+    "layer": "4.5"
+  },
+  "domain": "enterprise-attack",
+  "description": "Auto-generated from Sigma rule attack.t#### tags in detections/rules/",
+  "techniques": [
+    {
+      "techniqueID": "T1003.001",
+      "score": 1,
+      "comment": "proc_creation_win_lsass_dump_comsvcs.yml",
+      "color": "#4caf50"
+    },
+    {
+      "techniqueID": "T1027",
+      "score": 1,
+      "comment": "proc_creation_win_encoded_powershell.yml",
+      "color": "#4caf50"
+    },
+    {
+      "techniqueID": "T1053.005",
+      "score": 1,
+      "comment": "proc_creation_win_schtasks_persistence.yml",
+      "color": "#4caf50"
+    },
+    {
+      "techniqueID": "T1059.001",
+      "score": 1,
+      "comment": "proc_creation_win_encoded_powershell.yml",
+      "color": "#4caf50"
+    },
+    {
+      "techniqueID": "T1105",
+      "score": 1,
+      "comment": "proc_creation_win_certutil_download.yml",
+      "color": "#4caf50"
+    },
+    {
+      "techniqueID": "T1140",
+      "score": 1,
+      "comment": "proc_creation_win_certutil_download.yml",
+      "color": "#4caf50"
+    },
+    {
+      "techniqueID": "T1562.001",
+      "score": 1,
+      "comment": "proc_creation_win_defender_disabled.yml",
+      "color": "#4caf50"
+    }
+  ],
+  "gradient": {
+    "colors": [
+      "#ffffff",
+      "#4caf50"
+    ],
+    "minValue": 0,
+    "maxValue": 1
+  },
+  "legendItems": [
+    {
+      "label": "Covered by a Sigma rule",
+      "color": "#4caf50"
+    }
+  ]
+}

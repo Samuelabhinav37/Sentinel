@@ -1,0 +1,22 @@
+{
+  "rule_id": "6f2a9c4e-8b1d-4e7f-a5c3-1d9e6b4a8f2c",
+  "name": "Windows Defender Protections Disabled via PowerShell",
+  "description": "Detects use of the Set-MpPreference PowerShell cmdlet to disable real-time monitoring, script scanning, or other Windows Defender protections, a common pre-payload defense-impairment step. Source: detections/rules/proc_creation_win_defender_disabled.yml, compiled from Sigma via sigma-cli (eql, ecs_windows pipeline).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where (process.executable.caseless like~ (\"*\\\\powershell.exe\", \"*\\\\pwsh.exe\")) and process.command_line:\"*Set-MpPreference*\" and (process.command_line like~ (\"*-DisableRealtimeMonitoring*\", \"*-DisableScriptScanning*\", \"*-DisableIOAVProtection*\", \"*-DisableBehaviorMonitoring*\"))",
+  "index": ["winlogbeat-*", "logs-windows.*"],
+  "severity": "high",
+  "risk_score": 73,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.t1562.001", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1562/001/"
+  ],
+  "false_positives": [
+    "Administrators tuning Defender exclusions for a legitimate performance reason"
+  ],
+  "author": ["Sentinel"]
+}

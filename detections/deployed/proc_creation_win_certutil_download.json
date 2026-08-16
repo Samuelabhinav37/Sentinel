@@ -1,0 +1,23 @@
+{
+  "rule_id": "9d3f1a6b-5c2e-4f8a-b1d3-6a9c4e7f2b5d",
+  "name": "Suspicious Certutil Download or Decode",
+  "description": "Detects certutil.exe being used with -urlcache or -decode, a common living-off-the-land technique to download a remote file or decode a base64-smuggled payload using a signed Microsoft binary. Source: detections/rules/proc_creation_win_certutil_download.yml, compiled from Sigma via sigma-cli (eql, ecs_windows pipeline).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable.caseless:\"*\\\\certutil.exe\" and (process.command_line like~ (\"*-urlcache*\", \"*/urlcache*\", \"*-decode*\", \"*/decode*\"))",
+  "index": ["winlogbeat-*", "logs-windows.*"],
+  "severity": "medium",
+  "risk_score": 47,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.command-and-control", "attack.t1105", "attack.t1140", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1105/",
+    "https://attack.mitre.org/techniques/T1140/"
+  ],
+  "false_positives": [
+    "Rare legitimate certificate-management scripts that happen to use these flags"
+  ],
+  "author": ["Sentinel"]
+}

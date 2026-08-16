@@ -11,4 +11,40 @@
   status: unvalidated
   mttd_seconds: null
   last_run: null
-  notes: "Awaiting Elastic + Wazuh stack deployment (infra phase not yet complete)."
+  notes: "Deployed to Kibana Detection Engine. Awaiting Windows telemetry (Sysmon/Winlogbeat) before it can fire against real data."
+
+- rule_id: 7a1c2e4f-3b8d-4a5e-9c1f-2d6e8b0a4f7c
+  rule_file: rules/proc_creation_win_lsass_dump_comsvcs.yml
+  technique: T1003.001
+  atomic_test: "Rundll32 Comsvcs.dll Lsass Dump"
+  status: unvalidated
+  mttd_seconds: null
+  last_run: null
+  notes: "Deployed to Kibana Detection Engine. Awaiting Windows telemetry (Sysmon/Winlogbeat) before it can fire against real data."
+
+- rule_id: 9d3f1a6b-5c2e-4f8a-b1d3-6a9c4e7f2b5d
+  rule_file: rules/proc_creation_win_certutil_download.yml
+  technique: T1105
+  atomic_test: "Certutil - Download from URL"
+  status: unvalidated
+  mttd_seconds: null
+  last_run: null
+  notes: "Deployed to Kibana Detection Engine. Awaiting Windows telemetry (Sysmon/Winlogbeat) before it can fire against real data."
+
+- rule_id: 4e6b8d1a-2f5c-4b9e-a3d7-8c1f5a9e2b6d
+  rule_file: rules/proc_creation_win_schtasks_persistence.yml
+  technique: T1053.005
+  atomic_test: "Scheduled Task Startup Script"
+  status: unvalidated
+  mttd_seconds: null
+  last_run: null
+  notes: "Deployed to Kibana Detection Engine. Awaiting Windows telemetry (Sysmon/Winlogbeat) before it can fire against real data."
+
+- rule_id: 6f2a9c4e-8b1d-4e7f-a5c3-1d9e6b4a8f2c
+  rule_file: rules/proc_creation_win_defender_disabled.yml
+  technique: T1562.001
+  atomic_test: "Disable Windows Defender Realtime Monitoring"
+  status: unvalidated
+  mttd_seconds: null
+  last_run: null
+  notes: "Deployed to Kibana Detection Engine. Awaiting Windows telemetry (Sysmon/Winlogbeat) before it can fire against real data."

@@ -1,0 +1,33 @@
+title: Windows Defender Protections Disabled via PowerShell
+id: 6f2a9c4e-8b1d-4e7f-a5c3-1d9e6b4a8f2c
+status: experimental
+description: >
+  Detects use of the Set-MpPreference PowerShell cmdlet to disable real-time
+  monitoring, script scanning, or other Windows Defender protections, a
+  common pre-payload defense-impairment step.
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+author: Sentinel
+date: 2026-08-15
+tags:
+  - attack.t1562.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_image:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+  selection_cmdlet:
+    CommandLine|contains: 'Set-MpPreference'
+  selection_flags:
+    CommandLine|contains:
+      - '-DisableRealtimeMonitoring'
+      - '-DisableScriptScanning'
+      - '-DisableIOAVProtection'
+      - '-DisableBehaviorMonitoring'
+  condition: all of selection_*
+falsepositives:
+  - Administrators tuning Defender exclusions for a legitimate performance reason
+level: high

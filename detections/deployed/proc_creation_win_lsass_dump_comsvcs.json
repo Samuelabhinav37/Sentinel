@@ -1,0 +1,22 @@
+{
+  "rule_id": "7a1c2e4f-3b8d-4a5e-9c1f-2d6e8b0a4f7c",
+  "name": "LSASS Memory Dump via comsvcs.dll MiniDump",
+  "description": "Detects use of rundll32.exe to call the undocumented MiniDump export of comsvcs.dll against the LSASS process, a living-off-the-land technique to dump credential material without dropping a separate dumping tool. Source: detections/rules/proc_creation_win_lsass_dump_comsvcs.yml, compiled from Sigma via sigma-cli (eql, ecs_windows pipeline).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable.caseless:\"*\\\\rundll32.exe\" and process.command_line:\"*comsvcs.dll*\" and process.command_line:\"*MiniDump*\"",
+  "index": ["winlogbeat-*", "logs-windows.*"],
+  "severity": "high",
+  "risk_score": 73,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.credential-access", "attack.t1003.001", "sentinel-sigma"],
+  "references": [
+    "https://attack.mitre.org/techniques/T1003/001/"
+  ],
+  "false_positives": [
+    "Legitimate memory-dump troubleshooting by an administrator who knows what they're doing"
+  ],
+  "author": ["Sentinel"]
+}
