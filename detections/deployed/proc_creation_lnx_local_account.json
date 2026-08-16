@@ -1,0 +1,18 @@
+{
+  "rule_id": "b45e3d6f-42c6-47d8-a478-df6bd6cf534c",
+  "name": "Local System Accounts Discovery - Linux",
+  "description": "Detects enumeration of local system accounts via /etc/passwd, /etc/sudoers, or the id command. Adapted (narrowed to avoid overlap with the /etc/shadow-access rule) from SigmaHQ. Source: detections/rules/proc_creation_lnx_local_account.yml, hand-converted from Sigma. vi/vim are matched on process.name rather than process.executable, because update-alternatives resolves them to /usr/bin/vim.basic (same class of bug found live-fire testing the netcat rule -- see docs/build-log.md).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where ((process.executable like~ (\"*/cat\", \"*/head\", \"*/tail\", \"*/nano\", \"*/less\", \"*/more\") or process.name in (\"vi\", \"vim\")) and process.title like~ (\"*/etc/passwd*\", \"*/etc/sudoers*\")) or process.executable like~ \"*/id\"",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "low",
+  "risk_score": 21,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.discovery", "attack.t1087.001", "sentinel-sigma"],
+  "references": ["https://attack.mitre.org/techniques/T1087/001/"],
+  "false_positives": ["Legitimate administration activities"],
+  "author": ["Sentinel"]
+}

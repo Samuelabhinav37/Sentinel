@@ -12,6 +12,30 @@ auditbeat.modules:
 
 processors:
   - add_host_metadata: ~
+  # Noise reduction: none of this project's Sigma rules use PAM/session/
+  # service-lifecycle audit records (message_type), only process-creation
+  # (syscall) events -- and the single biggest noise source on this host
+  # turned out to be Wazuh's own manager process (wazuh-modulesd) doing its
+  # routine internal inventory scans, not systemd or Tailscale as expected
+  # going in. Deliberately does NOT drop generically "boring" binaries like
+  # getent/rpm/dpkg/ps/sed, since those have real detection value in other
+  # contexts (e.g. `getent shadow` is itself a credential-enumeration
+  # technique) -- only drops sources confirmed to be this host's own
+  # infrastructure noise. See docs/build-log.md.
+  - drop_event:
+      when:
+        or:
+          - not:
+              equals:
+                auditd.message_type: "syscall"
+          - equals:
+              process.executable: "/var/ossec/bin/wazuh-modulesd"
+          - equals:
+              process.executable: "/usr/lib/systemd/systemd"
+          - equals:
+              process.executable: "/usr/lib/systemd/systemd-user-runtime-dir"
+          - equals:
+              process.executable: "/usr/sbin/tailscaled"
 
 output.elasticsearch:
   hosts: ["${ELASTIC_URL}"]

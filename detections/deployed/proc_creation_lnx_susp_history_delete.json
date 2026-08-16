@@ -1,0 +1,18 @@
+{
+  "rule_id": "1182f3b3-e716-4efa-99ab-d2685d04360f",
+  "name": "History File Deletion",
+  "description": "Detects deletion of a shell history file to remove traces of malicious activity. Adapted from SigmaHQ. Source: detections/rules/proc_creation_lnx_susp_history_delete.yml, hand-converted from Sigma.",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable like~ (\"*/rm\", \"*/unlink\", \"*/shred\") and process.title like~ (\"*.bash_history*\", \"*.zsh_history*\", \"*_history*\")",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "high",
+  "risk_score": 73,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.defense-impairment", "attack.t1070.003", "sentinel-sigma"],
+  "references": ["https://attack.mitre.org/techniques/T1070/003/"],
+  "false_positives": ["Legitimate administration activities"],
+  "author": ["Sentinel"]
+}

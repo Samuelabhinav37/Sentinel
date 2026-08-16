@@ -1,0 +1,33 @@
+title: History File Deletion
+id: 1182f3b3-e716-4efa-99ab-d2685d04360f
+status: experimental
+description: >
+  Detects deletion of a shell history file to remove traces of malicious
+  activity. Adapted from SigmaHQ (rules/linux/process_creation/
+  proc_creation_lnx_susp_history_delete.yml).
+references:
+  - https://attack.mitre.org/techniques/T1070/003/
+  - https://github.com/SigmaHQ/sigma/blob/master/rules/linux/process_creation/proc_creation_lnx_susp_history_delete.yml
+author: Florian Roth (Nextron Systems) (SigmaHQ); adapted by Sentinel
+date: 2026-08-17
+tags:
+  - attack.defense-impairment
+  - attack.t1070.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection_img:
+    Image|endswith:
+      - '/rm'
+      - '/unlink'
+      - '/shred'
+  selection_history:
+    CommandLine|contains:
+      - '.bash_history'
+      - '.zsh_history'
+      - '_history'
+  condition: all of selection_*
+falsepositives:
+  - Legitimate administration activities
+level: high

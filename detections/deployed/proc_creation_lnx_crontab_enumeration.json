@@ -1,0 +1,18 @@
+{
+  "rule_id": "403ed92c-b7ec-4edd-9947-5b535ee12d46",
+  "name": "Crontab Enumeration",
+  "description": "Detects usage of crontab -l to list the current user's scheduled tasks, a common reconnaissance step. Adapted from SigmaHQ. Source: detections/rules/proc_creation_lnx_crontab_enumeration.yml, hand-converted from Sigma.",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable like~ \"*/crontab\" and process.title like~ \"* -l*\"",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "low",
+  "risk_score": 21,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.discovery", "attack.t1007", "sentinel-sigma"],
+  "references": ["https://attack.mitre.org/techniques/T1007/"],
+  "false_positives": ["Legitimate use of crontab"],
+  "author": ["Sentinel"]
+}

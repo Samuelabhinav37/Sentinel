@@ -1,0 +1,18 @@
+{
+  "rule_id": "c21c4eaa-ba2e-419a-92b2-8371703cbe21",
+  "name": "Setuid and Setgid",
+  "description": "Detects suspicious change of file privileges with chown and chmod commands, a common Linux privilege-escalation persistence mechanism. Adapted from SigmaHQ. Source: detections/rules/proc_creation_lnx_setgid_setuid.yml, hand-converted from Sigma.",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.title like~ \"*chown root*\" and process.title like~ (\"* chmod u+s*\", \"* chmod g+s*\")",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "low",
+  "risk_score": 21,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.persistence", "attack.privilege-escalation", "attack.t1548.001", "sentinel-sigma"],
+  "references": ["https://attack.mitre.org/techniques/T1548/001/"],
+  "false_positives": ["Legitimate administration activities"],
+  "author": ["Sentinel"]
+}

@@ -1,0 +1,43 @@
+title: Local System Accounts Discovery - Linux
+id: b45e3d6f-42c6-47d8-a478-df6bd6cf534c
+status: experimental
+description: >
+  Detects enumeration of local system accounts via /etc/passwd, /etc/sudoers,
+  or the id command. Adapted (narrowed to avoid overlap with the existing
+  /etc/shadow-access rule) from SigmaHQ (rules/linux/process_creation/
+  proc_creation_lnx_local_account.yml). NOTE: the deployed EQL matches vi/vim
+  on the invoked process name rather than the resolved executable path --
+  update-alternatives resolves both to /usr/bin/vim.basic on this host. Found
+  via live-fire testing, see docs/build-log.md.
+references:
+  - https://attack.mitre.org/techniques/T1087/001/
+  - https://github.com/SigmaHQ/sigma/blob/master/rules/linux/process_creation/proc_creation_lnx_local_account.yml
+author: Alejandro Ortuno, oscd.community, CheraghiMilad (SigmaHQ); adapted by Sentinel
+date: 2026-08-17
+tags:
+  - attack.discovery
+  - attack.t1087.001
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection_read:
+    Image|endswith:
+      - '/cat'
+      - '/head'
+      - '/tail'
+      - '/vi'
+      - '/vim'
+      - '/nano'
+      - '/less'
+      - '/more'
+  selection_target:
+    CommandLine|contains:
+      - '/etc/passwd'
+      - '/etc/sudoers'
+  selection_id:
+    Image|endswith: '/id'
+  condition: (selection_read and selection_target) or selection_id
+falsepositives:
+  - Legitimate administration activities
+level: low

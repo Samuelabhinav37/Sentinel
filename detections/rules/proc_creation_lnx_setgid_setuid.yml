@@ -1,0 +1,31 @@
+title: Setuid and Setgid
+id: c21c4eaa-ba2e-419a-92b2-8371703cbe21
+status: experimental
+description: >
+  Detects suspicious change of file privileges with chown and chmod
+  commands, a common Linux privilege-escalation persistence mechanism.
+  Adapted from SigmaHQ (rules/linux/process_creation/
+  proc_creation_lnx_setgid_setuid.yml).
+references:
+  - https://attack.mitre.org/techniques/T1548/001/
+  - https://github.com/SigmaHQ/sigma/blob/master/rules/linux/process_creation/proc_creation_lnx_setgid_setuid.yml
+author: Ömer Günal (SigmaHQ); adapted by Sentinel
+date: 2026-08-17
+tags:
+  - attack.persistence
+  - attack.privilege-escalation
+  - attack.t1548.001
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_root:
+    CommandLine|contains: 'chown root'
+  selection_perm:
+    CommandLine|contains:
+      - ' chmod u+s'
+      - ' chmod g+s'
+  condition: all of selection_*
+falsepositives:
+  - Legitimate administration activities
+level: low

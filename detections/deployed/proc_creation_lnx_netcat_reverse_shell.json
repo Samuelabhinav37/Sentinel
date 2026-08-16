@@ -1,0 +1,18 @@
+{
+  "rule_id": "7f734ed0-4f47-46c0-837f-6ee62505abd9",
+  "name": "Potential Netcat Reverse Shell Execution",
+  "description": "Detects execution of netcat with the -c/-e flag followed by a shell, a classic reverse-shell setup. Adapted from SigmaHQ. Source: detections/rules/proc_creation_lnx_netcat_reverse_shell.yml, hand-converted from Sigma. Matches on process.name (the invoked basename) rather than process.executable, because Debian/Ubuntu's update-alternatives resolves nc to /usr/bin/nc.openbsd -- process.executable would silently never match \"*/nc\" (found via live-fire testing, see docs/build-log.md).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.name in (\"nc\", \"ncat\") and process.title like~ (\"* -c *\", \"* -e *\") and process.title like~ (\"*bash*\", \"*/bin/sh*\", \"*zsh*\", \"*ksh*\", \"*csh*\", \"*ash*\")",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "high",
+  "risk_score": 73,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.execution", "attack.command-and-control", "attack.t1059", "sentinel-sigma"],
+  "references": ["https://attack.mitre.org/techniques/T1059/"],
+  "false_positives": ["Unlikely"],
+  "author": ["Sentinel"]
+}

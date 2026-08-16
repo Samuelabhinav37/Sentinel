@@ -1,0 +1,18 @@
+{
+  "rule_id": "2953194b-e33c-4859-b9e8-05948c167447",
+  "name": "DD File Overwrite",
+  "description": "Detects potential overwriting and deletion of a file using dd, a common anti-forensic data-destruction technique. Adapted from SigmaHQ. Source: detections/rules/proc_creation_lnx_dd_file_overwrite.yml, hand-converted from Sigma.",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable like~ \"*/dd\" and process.title like~ \"*of=*\" and process.title like~ (\"*if=/dev/zero*\", \"*if=/dev/null*\")",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "low",
+  "risk_score": 21,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.impact", "attack.t1485", "sentinel-sigma"],
+  "references": ["https://attack.mitre.org/techniques/T1485/"],
+  "false_positives": ["Any user deleting files that way"],
+  "author": ["Sentinel"]
+}

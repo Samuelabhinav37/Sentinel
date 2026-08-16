@@ -1,0 +1,31 @@
+title: DD File Overwrite
+id: 2953194b-e33c-4859-b9e8-05948c167447
+status: experimental
+description: >
+  Detects potential overwriting and deletion of a file using dd, a common
+  anti-forensic data-destruction technique. Adapted from SigmaHQ (rules/
+  linux/process_creation/proc_creation_lnx_dd_file_overwrite.yml).
+references:
+  - https://attack.mitre.org/techniques/T1485/
+  - https://github.com/SigmaHQ/sigma/blob/master/rules/linux/process_creation/proc_creation_lnx_dd_file_overwrite.yml
+author: Roberto Rodriguez (Cyb3rWard0g), OTR, MSTIC (SigmaHQ); adapted by Sentinel
+date: 2026-08-17
+tags:
+  - attack.impact
+  - attack.t1485
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection1:
+    Image|endswith: '/dd'
+  selection2:
+    CommandLine|contains: 'of='
+  selection3:
+    CommandLine|contains:
+      - 'if=/dev/zero'
+      - 'if=/dev/null'
+  condition: all of selection*
+falsepositives:
+  - Any user deleting files that way
+level: low

@@ -776,82 +776,6 @@ sentinel-auditbeat` immediately to restore the sensor. This is the same lesson a
 detection rule is a claim about how a specific system actually works, and the only way to
 find out it's wrong is to actually try to trigger it.
 
-## Current state (end of this session)
-
-**Live infrastructure** (all reachable only via Tailscale, matching the original manual
-setup's ingress design):
-
-| Service | Host | Tailscale address |
-|---|---|---|
-| Kibana | sentinel-elastic | `http://100.103.246.10:5601` |
-| Wazuh dashboard | sentinel-wazuh | `https://100.100.197.117` |
-| Suricata + Zeek | sentinel-wazuh | feeding Wazuh manager (verified ingesting) |
-| Shuffle SOAR | sentinel-soar | `https://100.90.159.33:3443` |
-| n8n | sentinel-soar | `http://100.90.159.33:5678` |
-| Ollama (`llama3.2:3b`) | sentinel-soar | internal only (n8n → `ollama:11434`) |
-| Windows telemetry target | — | torn down; fixed userdata script ready to redeploy |
-| auditbeat (Linux telemetry) | sentinel-wazuh | Docker container, host network, feeding `auditbeat-linux` on sentinel-elastic |
-| n8n push triage webhook | sentinel-soar | `http://100.90.159.33:5678/webhook/sentinel-alert-push`, called directly by a Kibana `.webhook` connector action |
-
-**License**: running under a 30-day Elastic trial (started this session via
-`_license/start_trial`, expires 2026-09-15), which unlocked the Gold-tier `.webhook`
-connector type. Reverts to Basic automatically on expiry — nothing in this project
-requires the trial to keep working, since the original poll-based pipeline still runs
-unmodified alongside the new push one.
-
-**LLM triage pipeline — now two, running in parallel**: the original n8n Schedule Trigger
-polling `.alerts-security.alerts-default*` every 5 minutes (still the license-agnostic
-baseline), plus a new push pipeline where a Kibana rule action calls an n8n webhook the
-instant each alert fires (`infra/compose/soar/n8n/workflows/llm-triage-push.json`, see
-Phase 23). Both call the same self-hosted Ollama model and write to the same
-`sentinel-triage` index using distinct document ids, so results from both are inspectable
-side by side. Measured push latency (alert fired to triage written): **67 seconds**,
-almost entirely Ollama inference — versus the polling pipeline's fixed 5-minute schedule,
-which can add several more minutes of pure signaling delay on top of that same inference
-time depending on where in the cycle an alert lands.
-
-**Detection-as-code**: 10 Sigma rules (5 Windows, 5 Linux), all deployed live as
-scheduled Kibana detection rules. ATT&CK coverage: 12 techniques. All 10 are now
-**confirmed firing correctly**. The 5 Windows rules were validated via a mix of real
-replayed attack telemetry from OTRF Mordor (LSASS/comsvcs, scheduled-task creation) and
-hand-built synthetic events (encoded PowerShell, certutil, Defender disabled — no Mordor
-sample exists for these); the synthetic-event pass caught and fixed a real bug in the
-encoded-PowerShell rule's `regex~` anchoring (see Phase 21). The 5 Linux rules were
-validated with **genuinely live Atomic Red Team execution** against `sentinel-wazuh` (see
-Phase 22) — three sourced from the official atomic-red-team catalog, two hand-run because
-the catalog has no Linux test for that technique — and produced this project's first real
-measured `mttd_seconds` values (74–151s). That same live-testing pass caught a real
-architecture bug: a Linux defense-impairment rule modeled on `auditctl`/`systemctl` was
-untestable because neither exists on a host where auditbeat runs as a Docker container
-talking to the kernel directly; it was rewritten to detect `docker stop/kill/rm` against
-the project's own sensor containers instead. Every rule's validation has an explicit
-negative control confirming it doesn't fire on benign use of the same tool.
-
-**LLM triage pipeline**: n8n polls Elasticsearch every 5 minutes for `sentinel-sigma`-
-tagged alerts, has a self-hosted Ollama model assess severity/false-positive
-likelihood/recommended action, and writes the result into a `sentinel-triage`
-Elasticsearch index. **Confirmed working fully end-to-end against real alerts**,
-including correct multi-item batch handling — 4 real alerts in one poll cycle, all 4
-triaged accurately, zero errors.
-
-**Replay tooling**: `detections/scripts/replay_mordor_dataset.py` plus two Elasticsearch
-index templates (`sentinel-windows-ecs` for the `winlogbeat-*`/`logs-windows.*` pattern,
-`sentinel-triage` for the triage output index) — both templates fix real mapping bugs
-that would otherwise have surfaced again against genuine future Winlogbeat data, not
-just this replay. Both templates are now committed as reproducible IaC under
-`infra/elasticsearch/index-templates/` (pulled from the live cluster and verified via a
-round-trip redeploy, see Phase 20), not just ad-hoc `curl` commands.
-
-`detections/tests/validation.yml` now has all 10 rules as `true_positive` — the notes on
-each entry are explicit about the strength of evidence behind it (real Mordor replay,
-hand-built synthetic event, or genuinely live Atomic Red Team execution, weakest to
-strongest), and the 5 Linux entries carry this project's first real measured
-`mttd_seconds` values instead of `null`.
-
-**Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down) and
-a live Atomic Red Team run against it — the Windows side is still validated via replay/
-synthetic events only, now that the Linux side has genuinely live coverage.
-
 ## Phase 23 — a license trial, and the Kibana-push alternative from Phase 13
 
 Phase 13 redesigned the triage trigger from Kibana-push (a `.webhook` connector action) to
@@ -932,6 +856,180 @@ pipelines active rather than replacing the polling one — it's still the honest
 for what this project runs without a paid license, and the side-by-side comparison (same
 alerts, same LLM, two different trigger mechanisms, two different measured latencies) is
 more useful than picking a winner and deleting the loser.
+
+## Phase 24 — broader coverage from SigmaHQ, noise reduction, and a one-command deploy
+
+Explicit ask this round: more ATT&CK coverage, less noise, fewer manual steps to keep it
+all running. Three separable pieces of work, tackled together because they kept feeding
+into each other.
+
+**Coverage, by curating rather than hand-authoring.** Every rule so far had been written
+from scratch. SigmaHQ's public repo has 122 Linux `process_creation` rules alone —
+curated 8 of them spanning tactics this project had no coverage of at all (discovery,
+exfiltration, impact, privilege escalation, a second persistence mechanism, command and
+control, a second defense-evasion mechanism, reconnaissance), preserving each rule's real
+SigmaHQ id and attributing the original authors rather than re-inventing new ids. Hand-
+converted each to EQL the same way as every other Linux rule (no `ecs_linux` pysigma
+pipeline exists), deployed, and live-fired all 8 with real commands against
+`sentinel-wazuh` rather than trusting the conversion blindly.
+
+**Two more real bugs, same root cause.** The netcat rule fired 0/1 on first live test.
+Root cause: Debian/Ubuntu's `update-alternatives` resolves `nc` to
+`/usr/bin/nc.openbsd` — `process.executable` (the resolved path this project's rules
+generally match with `like~ "*/nc"`) never ends with `/nc` for a real invocation, even
+though the user typed `nc` and `process.title`/`process.args` correctly show `nc` as
+typed. `process.name` — the invoked basename, not the resolved path — is the field that
+survives this. Fixed the netcat rule, then proactively checked whether the same bug was
+lurking anywhere else rather than waiting for the next live-fire failure to find it: `vi`
+and `vim` both resolve to `/usr/bin/vim.basic` on this host too, silently breaking the
+new local-account-discovery rule's `vi`/`vim` matching in the exact same way. Fixed both
+by matching `process.name` instead. Checked every other binary referenced across all 18
+rules (`cat`, `dd`, `id`, `crontab`, `curl`, `wget`, `base64`, `rm`/`cp`/`mv`/`tee`) and
+confirmed none of the rest are `update-alternatives`-aliased on this host.
+
+**Noise reduction, and a wrong assumption corrected by actually measuring.** Went in
+assuming systemd and Tailscale's SSH-bootstrap processes were the dominant noise in
+`auditbeat-linux`. Measuring first (an aggregation on `auditd.message_type` and
+`process.executable`) showed the real biggest source was `/var/ossec/bin/wazuh-modulesd`
+— the Wazuh manager's own routine internal inventory scanning, running on the same host
+as the sensor — at roughly 20% of total volume by itself, dwarfing systemd and Tailscale
+combined. A further ~25% was PAM/session/service-lifecycle audit records
+(`user_login`, `cred_refr`, `service_start`, etc.) that none of this project's Sigma rules
+even reference, since they're all `process_creation`-only. Added an auditbeat
+`drop_event` processor for both, deliberately *not* dropping generically "boring"
+binaries like `getent`/`rpm`/`dpkg`/`ps` even though they accounted for meaningful volume
+too, since those have real detection value in other contexts (`getent shadow` is itself a
+credential-enumeration technique) — noise reduction that costs future detection coverage
+isn't actually a win. Verified in steady state after restarting auditbeat: the targeted
+sources dropped to zero, with one honest caveat — two Tailscale events leaked through in
+the few-second window right at auditbeat's own restart (stale correlation state from the
+kernel backlog), gone by the very next fresh connection. A real, small, one-time
+transient, not an ongoing gap; worth being honest about rather than smoothing over.
+
+Separately, used Kibana's `alert_suppression` (unlocked by the same trial license) to
+collapse a different kind of noise found back in Phase 22: one real attacker action
+crossing a privilege boundary (`sudo cat /etc/shadow`) produces several distinct alerts —
+one for the shell, one for `sudo`, one for the process `sudo` execs — because auditd logs
+one record per `execve`, not one per logical action. Grouping by `process.executable` (an
+obvious first instinct) wouldn't have collapsed this at all, since the shell, `sudo`, and
+the child process are three different executables for the same event. Grouping by
+`host.name` alone does, verified live (4 alerts → 1 for the same test that produced 4
+back in Phase 22) — a deliberate tradeoff, documented in the script itself: it also means
+two genuinely unrelated firings of the same rule on the same host within the 5-minute
+window collapse into one alert, which is the right call for this project's single-host
+lab scope and probably the wrong default for a multi-host production deployment.
+
+**A footgun found while rolling suppression out, then fixed with the "fewer clicks"
+ask in mind.** Re-running `deploy.sh` to ship the netcat/vi fixes silently wiped every
+rule's `actions` and `alert_suppression` — its `PUT` replaces a rule's entire body, and
+neither field is present in the committed rule JSON (they're attached separately, after
+the fact, via cluster-specific ids that don't belong in version control). Three scripts
+run in the right order, forgotten in the wrong order, and coverage-affecting config
+silently regresses with no error. Fixed the immediate case by re-running the other two
+scripts, then fixed the actual problem: `detections/deployed/deploy-all.sh` chains all
+three in the one order that's safe, and a new repo-root `scripts/redeploy.sh` chains index
+templates, the full detection layer, and every n8n workflow (via a new
+`infra/compose/soar/n8n/deploy-workflows.sh`, using the public API's
+`X-N8N-API-KEY` rather than the CLI/SQLite path Phase 12 needed) into one command. Ran it
+for real, twice, confirming idempotency both times: no duplicate n8n workflows created on
+a second run (looked up by name, updated in place), and actions/suppression both survived
+a full rule redeploy afterward. Deliberately scoped to the software layer — it assumes
+Terraform and the per-service Docker Compose stacks are already up, since bundling
+infrastructure-provisioning risk into a routine "redeploy my rules" command is exactly the
+kind of blast-radius mismatch this project's safety practices exist to avoid.
+
+## Current state (end of this session)
+
+**Live infrastructure** (all reachable only via Tailscale, matching the original manual
+setup's ingress design):
+
+| Service | Host | Tailscale address |
+|---|---|---|
+| Kibana | sentinel-elastic | `http://100.103.246.10:5601` |
+| Wazuh dashboard | sentinel-wazuh | `https://100.100.197.117` |
+| Suricata + Zeek | sentinel-wazuh | feeding Wazuh manager (verified ingesting) |
+| Shuffle SOAR | sentinel-soar | `https://100.90.159.33:3443` |
+| n8n | sentinel-soar | `http://100.90.159.33:5678` |
+| Ollama (`llama3.2:3b`) | sentinel-soar | internal only (n8n → `ollama:11434`) |
+| Windows telemetry target | — | torn down; fixed userdata script ready to redeploy |
+| auditbeat (Linux telemetry) | sentinel-wazuh | Docker container, host network, feeding `auditbeat-linux` on sentinel-elastic |
+| n8n push triage webhook | sentinel-soar | `http://100.90.159.33:5678/webhook/sentinel-alert-push`, called directly by a Kibana `.webhook` connector action |
+
+**License**: running under a 30-day Elastic trial (started this session via
+`_license/start_trial`, expires 2026-09-15), which unlocked the Gold-tier `.webhook`
+connector type. Reverts to Basic automatically on expiry — nothing in this project
+requires the trial to keep working, since the original poll-based pipeline still runs
+unmodified alongside the new push one.
+
+**LLM triage pipeline — now two, running in parallel**: the original n8n Schedule Trigger
+polling `.alerts-security.alerts-default*` every 5 minutes (still the license-agnostic
+baseline), plus a new push pipeline where a Kibana rule action calls an n8n webhook the
+instant each alert fires (`infra/compose/soar/n8n/workflows/llm-triage-push.json`, see
+Phase 23). Both call the same self-hosted Ollama model and write to the same
+`sentinel-triage` index using distinct document ids, so results from both are inspectable
+side by side. Measured push latency (alert fired to triage written): **67 seconds**,
+almost entirely Ollama inference — versus the polling pipeline's fixed 5-minute schedule,
+which can add several more minutes of pure signaling delay on top of that same inference
+time depending on where in the cycle an alert lands.
+
+**Detection-as-code**: 18 Sigma rules (5 Windows, 13 Linux), all deployed live as
+scheduled Kibana detection rules, all with a push action and `host.name`-grouped alert
+suppression attached. ATT&CK coverage: 19 techniques across discovery, execution,
+persistence, privilege escalation, defense evasion/impairment, credential access,
+command-and-control, and exfiltration/impact. All 18 are **confirmed firing correctly**
+against live-fired real commands, not just synthetic events. The original 5 Windows rules
+were validated via a mix of real replayed attack telemetry from OTRF Mordor (LSASS/
+comsvcs, scheduled-task creation) and hand-built synthetic events (encoded PowerShell,
+certutil, Defender disabled — no Mordor sample exists for these); the synthetic-event pass
+caught and fixed a real bug in the encoded-PowerShell rule's `regex~` anchoring (see
+Phase 21). The 13 Linux rules — 5 hand-authored, 8 curated from SigmaHQ (see Phase 24) —
+were all validated with **genuinely live execution** against `sentinel-wazuh`: three of
+the original 5 sourced from the official atomic-red-team catalog, the rest hand-run
+because the catalog has no Linux test for that technique. This produced this project's
+first real measured `mttd_seconds` values (45–151s) and caught three real bugs no amount
+of synthetic testing would have found: a defense-impairment rule modeled on a service
+(`auditctl`/`systemctl`) that doesn't exist on this host's actual architecture (Phase 22),
+and two rules (`nc`, `vi`/`vim`) silently broken by `update-alternatives` resolving the
+invoked name to a different binary path than the one being matched (Phase 24). Every
+rule's validation has an explicit negative control confirming it doesn't fire on benign
+use of the same tool.
+
+**Noise reduction**: auditbeat drops PAM/session/service-lifecycle records and this
+host's own infrastructure noise (Wazuh's manager process, systemd, Tailscale) before
+shipping — measuring first showed the Wazuh manager's own routine scanning was the single
+biggest noise source, not systemd or Tailscale as assumed going in. Every rule also has
+Kibana alert suppression grouped by `host.name`, collapsing the "one attacker action,
+several audit records" duplication found in Phase 22 (4 alerts → 1 for the same test).
+See Phase 24 for the measurements and the tradeoffs of both.
+
+**Deploy tooling**: the whole software layer (index templates, all 18 rules + their push
+actions + their alert suppression, both n8n workflows) now redeploys with one command,
+`scripts/redeploy.sh` — built after discovering that redeploying rules alone silently
+wipes actions and suppression, see Phase 24. Scoped deliberately to the software layer;
+Terraform and the per-VM Docker Compose stacks stay a separate, conscious step.
+
+**Replay tooling**: `detections/scripts/replay_mordor_dataset.py` plus two Elasticsearch
+index templates (`sentinel-windows-ecs` for the `winlogbeat-*`/`logs-windows.*` pattern,
+`sentinel-triage` for the triage output index) — both templates fix real mapping bugs
+that would otherwise have surfaced again against genuine future Winlogbeat data, not
+just this replay. Both templates are now committed as reproducible IaC under
+`infra/elasticsearch/index-templates/` (pulled from the live cluster and verified via a
+round-trip redeploy, see Phase 20), not just ad-hoc `curl` commands.
+
+`detections/tests/validation.yml` now has all 18 rules as `true_positive` — the notes on
+each entry are explicit about the strength of evidence behind it (real Mordor replay,
+hand-built synthetic event, or genuinely live execution, weakest to strongest), and 6
+Linux entries carry this project's first real measured `mttd_seconds` values instead of
+`null`.
+
+**Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down) and
+a live Atomic Red Team run against it — the Windows side is still validated via replay/
+synthetic events only, now that the Linux side has genuinely live coverage (planned last,
+deliberately, once the rest of the platform work below is done); Shuffle SOAR has been
+running the entire project and has never been wired into anything — triage is fully
+automated but response still isn't; no CI validating Sigma rules before they reach the
+live cluster; no dashboards for MTTD/alert-volume/ATT&CK-coverage trending, even though
+the underlying data (`validation.yml`, `sentinel-triage`) already exists.
 
 ## Lessons worth writing about
 
@@ -1036,3 +1134,30 @@ more useful than picking a winner and deleting the loser.
   independent LLM verdict, with no error and no indication anything had been discarded.
   Idempotency guarantees were reasoned about per-writer, not for two independent writers
   targeting the same key.
+- **The obvious noise suspect is often wrong; measuring beats assuming.** Going into the
+  auditd noise-reduction pass, systemd and Tailscale's SSH-bootstrap processes looked like
+  the clear biggest offenders from prior exploration. A single terms aggregation on
+  `process.executable` showed the real biggest source was the Wazuh manager's own routine
+  internal scanning — running on the same host as the sensor — at roughly 4x the volume of
+  systemd and Tailscale combined. Optimizing against the assumption instead of the
+  measurement would have shipped a fix that barely moved the number.
+- **A symlink resolving to a different name than the one the user typed can silently
+  break an entire class of "does this binary match" detection logic.** `Image|endswith`
+  (and this project's `process.executable like~` translation of it) assumes the resolved
+  executable path contains the name an analyst would recognize. `update-alternatives`
+  breaks that assumption for any tool it manages — `nc` becomes `/usr/bin/nc.openbsd`,
+  `vi`/`vim` become `/usr/bin/vim.basic` — silently, with no error, no log line, nothing
+  to notice short of a live-fire test coming back 0/1. `process.name` (the invoked
+  basename, from `argv[0]`/`comm`, not the resolved path) survives this. Worth checking
+  which fields actually reflect user intent versus post-resolution reality before trusting
+  a path-based match on any Debian/Ubuntu host.
+- **Config attached out-of-band, after a deploy, is exactly the config a redeploy will
+  silently destroy.** Kibana rule actions and alert suppression live on the same rule
+  object as everything in the committed JSON, but they're attached separately (cluster-
+  specific ids don't belong in version control) — so `deploy.sh`'s `PUT`, which replaces
+  the whole rule body from that committed JSON, has no way to know they should be
+  preserved. No error, no warning: the rule keeps working exactly as before, just without
+  the two things bolted on after the fact. Found by rolling out a two-line bug fix and
+  noticing the push pipeline had gone quiet. The fix isn't "remember to run the other
+  scripts too" (that's the bug, not the fix) — it's a single entry point that always runs
+  them together.

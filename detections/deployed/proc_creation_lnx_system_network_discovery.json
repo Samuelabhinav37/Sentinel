@@ -1,0 +1,18 @@
+{
+  "rule_id": "e7bd1cfa-b446-4c88-8afb-403bcd79e3fa",
+  "name": "System Network Discovery - Linux",
+  "description": "Detects enumeration of local network configuration via common networking tools. Adapted from SigmaHQ. Source: detections/rules/proc_creation_lnx_system_network_discovery.yml, hand-converted from Sigma (no ecs_linux/auditd pysigma pipeline exists).",
+  "type": "eql",
+  "language": "eql",
+  "query": "any where process.executable like~ (\"*/firewall-cmd\", \"*/ufw\", \"*/iptables\", \"*/netstat\", \"*/ss\", \"*/ip\", \"*/ifconfig\", \"*/systemd-resolve\", \"*/route\") or process.title like~ \"*/etc/resolv.conf*\"",
+  "index": ["auditbeat-linux", "auditbeat-*"],
+  "severity": "low",
+  "risk_score": 21,
+  "enabled": true,
+  "from": "now-6m",
+  "interval": "5m",
+  "tags": ["attack.discovery", "attack.t1016", "sentinel-sigma"],
+  "references": ["https://attack.mitre.org/techniques/T1016/"],
+  "false_positives": ["Legitimate administration activities"],
+  "author": ["Sentinel"]
+}
