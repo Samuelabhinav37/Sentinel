@@ -602,6 +602,42 @@ real attack telemetry → alert lands in Elasticsearch → n8n polls it → a lo
 produces an accurate, correctly-scoped triage verdict → result is written back — has
 actually been observed working, rather than assumed to work from unit-level checks.
 
+## Phase 20 — closing the loose ends: validation results and IaC for the index templates
+
+Two follow-ups from the previous session's "not yet done" list.
+
+First, updated `detections/tests/validation.yml`: the LSASS/comsvcs and scheduled-task
+rules moved from `unvalidated` to `true_positive`, with notes pointing at the specific
+Mordor sample used and the Phase 19 confirmation. Left `mttd_seconds` as `null` rather
+than inventing a number — the replay script stamps `@timestamp` at replay time, not the
+dataset's original event time, so a precise detect-latency figure isn't meaningful here.
+
+Second, the two Elasticsearch index templates (`sentinel-windows-ecs`, `sentinel-triage`)
+had only ever existed as ad-hoc `curl -X PUT` commands run by hand against the elastic
+VM — real config, but not reproducible from the repo. Rather than reconstruct them from
+memory, pulled the live definitions directly (`GET _index_template/<name>`) via SSH to
+`sentinel-elastic` and committed those exact bodies to
+`infra/elasticsearch/index-templates/`, plus a `deploy.sh` matching the idempotent-PUT
+pattern already used by `detections/deployed/deploy.sh`.
+
+Verifying the round-trip nearly caused a problem: `scp`'d the two new JSON files plus
+`deploy.sh` into `/tmp` on the elastic VM to test-deploy them, but `/tmp` already had
+several unrelated leftover files from earlier debugging sessions (`alerts_check.json`,
+`final_triage.json`, `triage_check.json` — old query-result dumps, not template bodies).
+`deploy.sh`'s `for template in *.json` glob picked up `alerts_check.json` too and tried
+to `PUT` it as an index template body named `alerts_check`. It isn't a valid template
+document, so Elasticsearch rejected it and `curl -sf` under `set -euo pipefail` aborted
+the script before anything was written — confirmed after the fact with a `404` on
+`_index_template/alerts_check`. No harm done, but it was a reminder not to run glob-based
+deploy scripts against a directory shared with unrelated scratch files. Fixed by moving
+the real template files into an isolated `/tmp/index-templates-verify/` directory,
+re-running `deploy.sh` from there, and confirming both `PUT`s returned
+`{"acknowledged":true}` with content identical to what was already live (Elasticsearch
+doesn't bump `modified_date_millis` on a PUT with unchanged content, which is why that
+field alone wasn't a reliable verification signal). Cleaned up the verification directory
+afterward; the other unrelated leftover files in `/tmp` on `sentinel-elastic` were left
+alone since deleting them wasn't part of this task.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -636,14 +672,19 @@ triaged accurately, zero errors.
 index templates (`sentinel-windows-ecs` for the `winlogbeat-*`/`logs-windows.*` pattern,
 `sentinel-triage` for the triage output index) — both templates fix real mapping bugs
 that would otherwise have surfaced again against genuine future Winlogbeat data, not
-just this replay.
+just this replay. Both templates are now committed as reproducible IaC under
+`infra/elasticsearch/index-templates/` (pulled from the live cluster and verified via a
+round-trip redeploy, see Phase 20), not just ad-hoc `curl` commands.
+
+`detections/tests/validation.yml` now reflects the real Phase 19 results: the
+LSASS/comsvcs and scheduled-task rules are `true_positive`, the other three remain
+`unvalidated` pending a Mordor sample, live Windows target, or hand-built synthetic event.
 
 **Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down);
 Atomic Red Team validation for the 3 rules without a matching Mordor sample; live Atomic
 Red Team runs against a disposable Linux VM (the better option for Linux coverage,
-identified but not yet built); `detections/tests/validation.yml` still needs updating
-with the real true-positive results from Phase 19; a from-Kibana push-based alternative
-to the n8n polling design, if the license is ever upgraded.
+identified but not yet built); a from-Kibana push-based alternative to the n8n polling
+design, if the license is ever upgraded.
 
 ## Lessons worth writing about
 

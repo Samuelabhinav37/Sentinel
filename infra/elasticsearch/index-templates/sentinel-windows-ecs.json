@@ -1,0 +1,36 @@
+{
+  "index_patterns": ["winlogbeat-*", "logs-windows.*"],
+  "priority": 200,
+  "template": {
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "event": {
+          "properties": {
+            "code": { "type": "keyword" },
+            "category": { "type": "keyword" }
+          }
+        },
+        "host": {
+          "properties": {
+            "name": { "type": "keyword" }
+          }
+        },
+        "process": {
+          "properties": {
+            "executable": { "type": "keyword" },
+            "command_line": { "type": "keyword" }
+          }
+        }
+      },
+      "runtime": {
+        "process.executable.caseless": {
+          "type": "keyword",
+          "script": {
+            "source": "if (doc.containsKey(\"process.executable\") && doc[\"process.executable\"].size() != 0) { emit(doc[\"process.executable\"].value) }"
+          }
+        }
+      }
+    }
+  }
+}

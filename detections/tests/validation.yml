@@ -17,10 +17,10 @@
   rule_file: rules/proc_creation_win_lsass_dump_comsvcs.yml
   technique: T1003.001
   atomic_test: "Rundll32 Comsvcs.dll Lsass Dump"
-  status: unvalidated
+  status: true_positive
   mttd_seconds: null
-  last_run: null
-  notes: "Deployed to Kibana Detection Engine. Awaiting Windows telemetry (Sysmon/Winlogbeat) before it can fire against real data."
+  last_run: "2026-08-16"
+  notes: "Validated via OTRF Mordor replay (credential_access/host/psh_lsass_memory_dump_comsvcs.zip), not live Atomic Red Team — no Windows target is currently deployed. Rule fired on its normal 5-min Kibana schedule and was correctly triaged by the n8n/Ollama pipeline (severity: high). mttd_seconds not precisely measured since the replay script stamps @timestamp at replay time rather than the dataset's original event time."
 
 - rule_id: 9d3f1a6b-5c2e-4f8a-b1d3-6a9c4e7f2b5d
   rule_file: rules/proc_creation_win_certutil_download.yml
@@ -35,10 +35,10 @@
   rule_file: rules/proc_creation_win_schtasks_persistence.yml
   technique: T1053.005
   atomic_test: "Scheduled Task Startup Script"
-  status: unvalidated
+  status: true_positive
   mttd_seconds: null
-  last_run: null
-  notes: "Deployed to Kibana Detection Engine. Awaiting Windows telemetry (Sysmon/Winlogbeat) before it can fire against real data."
+  last_run: "2026-08-16"
+  notes: "Validated via OTRF Mordor replay (lateral_movement/host/schtask_create.zip), not live Atomic Red Team — no Windows target is currently deployed. Rule fired on its normal 5-min Kibana schedule and was correctly triaged by the n8n/Ollama pipeline (severity: medium), which correctly extracted the affected hostname (WORKSTATION5.theshire.local) from the raw alert data. mttd_seconds not precisely measured since the replay script stamps @timestamp at replay time rather than the dataset's original event time."
 
 - rule_id: 6f2a9c4e-8b1d-4e7f-a5c3-1d9e6b4a8f2c
   rule_file: rules/proc_creation_win_defender_disabled.yml

@@ -1,0 +1,12 @@
+{
+  "index_patterns": ["sentinel-triage*"],
+  "priority": 200,
+  "template": {
+    "mappings": {
+      "date_detection": false,
+      "properties": {
+        "@timestamp": { "type": "date" }
+      }
+    }
+  }
+}
