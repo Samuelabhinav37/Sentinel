@@ -5,7 +5,15 @@
     "mappings": {
       "date_detection": false,
       "properties": {
-        "@timestamp": { "type": "date" }
+        "@timestamp": { "type": "date" },
+        "mttd_seconds": { "type": "long" },
+        "triage_source": { "type": "keyword" },
+        "triage": {
+          "properties": {
+            "severity": { "type": "keyword" },
+            "false_positive_likelihood": { "type": "keyword" }
+          }
+        }
       }
     }
   }

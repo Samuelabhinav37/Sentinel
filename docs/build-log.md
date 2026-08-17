@@ -1067,6 +1067,52 @@ Elastic's extended dialect this project's queries actually use (`field like~ (..
 `field in (...)`) — it rejected every single valid query in the repo. Would have made CI
 actively worse (constant false failures on correct rules) rather than better; not used.
 
+## Phase 27 — dashboards, and the same "stop guessing, verify" habit applied to Kibana's own schema
+
+`validation.yml`'s `mttd_seconds` was always a one-off, hand-measured value per rule from
+a single live-fire test — useful for validation, useless for trending over time. Extended
+both n8n triage pipelines to compute it on *every* event: `Date.now()` at triage-write
+time minus the alert's real `kibana.alert.start`, defensively checking both the flat-
+dotted key a raw ES search hit's `_source` uses and the nested shape Kibana's `{{{context}}}`
+webhook rendering uses (confirmed both actually occur, in different pipelines, rather than
+assuming one). Added explicit `long`/`keyword` mappings to the `sentinel-triage` index
+template for `mttd_seconds`/`triage_source`/`triage.severity`/`triage.false_positive_likelihood`
+and deleted the 4-document index that already existed dynamically-mapped as `text`, same
+pattern as the auditbeat/index-template lesson from Phase 23 — a template only affects
+indices created *after* it's applied.
+
+**Built the dashboard via Kibana's saved-objects API, not the UI.** Given how much of this
+session's UI automation (Shuffle's node-graph editor especially) turned into fighting
+imprecise coordinates, and that hand-authoring JSON against a documented, stable schema
+had already worked well for Kibana rule actions and alert suppression earlier, tried the
+same approach here. Classic aggregation-based "Visualize" saved objects (not Lens — Lens's
+internal representation is far less stable to hand-author) have a genuinely simple,
+well-documented `visState` JSON shape. Built and verified five: MTTD trend (line, avg of
+`mttd_seconds` over time), alert volume by rule (stacked histogram), ATT&CK technique
+coverage (horizontal bar, terms agg on `kibana.alert.rule.tags` filtered to the
+`attack\.t[0-9].*` pattern — deliberately *alerts that actually fired*, not just rules
+that claim coverage, a different and more honest signal than the static
+`docs/attack_coverage.json` CI already builds from tags alone), triage severity
+distribution (donut), and automated response outcomes (donut, killed vs. rejected-and-why
+from `sentinel-response-actions`). Assembled into one "Sentinel SOC Overview" dashboard,
+verified every save actually succeeded structurally (no silent partial saves) and that
+re-running the deploy script is a true no-op update, not a duplicate.
+
+**A prohibition held even for the project's own infrastructure.** Wanted to visually
+confirm the dashboard rendered correctly, not just that the API accepted it — Kibana
+required logging in, and typing the `elastic` superuser password into that login form
+myself is exactly the kind of action this agent is never allowed to take, regardless of
+whose password it is or how low-stakes the target looks. Asked the user to log in instead
+and kept building via the API in the meantime, the same resolution as the n8n/Shuffle
+account friction earlier in this session — the boundary doesn't bend for infrastructure
+the agent itself provisioned.
+
+Committed the dashboard as IaC the same way as everything else in this project: exported
+via Kibana's saved-objects export API (`infra/kibana/sentinel-soc-overview.ndjson`, one
+JSON-per-line, human-diffable) plus `deploy.sh` using the import API with
+`overwrite=true`, tested for real idempotency (re-ran it, confirmed exactly 9 objects with
+the same ids, no duplicates) before treating it as done.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -1085,6 +1131,7 @@ setup's ingress design):
 | n8n push triage webhook | sentinel-soar | `http://100.90.159.33:5678/webhook/sentinel-alert-push`, called directly by a Kibana `.webhook` connector action |
 | sentinel-responder | sentinel-wazuh | Docker container, host network + pid, `:8088`, executes automated response actions |
 | Shuffle "Sentinel Auto-Respond" workflow | sentinel-soar | webhook-triggered by n8n's response gate, calls sentinel-responder |
+| "Sentinel SOC Overview" dashboard | sentinel-elastic | Kibana Dashboards app, `infra/kibana/sentinel-soc-overview.ndjson` |
 
 **License**: running under a 30-day Elastic trial (started this session via
 `_license/start_trial`, expires 2026-09-15), which unlocked the Gold-tier `.webhook`
@@ -1171,11 +1218,16 @@ found in Phase 21). The pysigma-conversion smoke tests (EQL/Splunk) are correctl
 to Windows-only rules now, having silently covered nothing meaningful for the 13 Linux
 rules since Phase 22 (see Phase 26).
 
+**Dashboards**: "Sentinel SOC Overview" (`infra/kibana/`) — real per-event MTTD trend, alert
+volume by rule, ATT&CK techniques that have actually fired, LLM triage severity
+distribution, automated response outcomes. Built via Kibana's saved-objects API as
+classic (non-Lens) visualizations, committed as an importable NDJSON bundle (see
+Phase 27).
+
 **Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down) and
 a live Atomic Red Team run against it — the Windows side is still validated via replay/
 synthetic events only, now that the Linux side has genuinely live coverage (planned last,
-deliberately); no dashboards for MTTD/alert-volume/ATT&CK-coverage trending, even though
-the underlying data (`validation.yml`, `sentinel-triage`) already exists.
+deliberately).
 
 ## Lessons worth writing about
 
