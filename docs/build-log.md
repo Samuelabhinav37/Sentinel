@@ -1113,6 +1113,66 @@ JSON-per-line, human-diffable) plus `deploy.sh` using the import API with
 `overwrite=true`, tested for real idempotency (re-ran it, confirmed exactly 9 objects with
 the same ids, no duplicates) before treating it as done.
 
+## Phase 28 — a lab deployment profile, grounded in measured usage rather than guesses
+
+Asked, at a research level, how to make this architecture portable to smaller
+infrastructure without it being "too heavy" elsewhere. Rather than guess at what to cut,
+ran `docker stats --no-stream` across all three VMs first to see what was actually being
+used against the project's real (lab-scale) data volume: Elasticsearch ~13.4GB actual
+against a hardcoded 16GB limit / `-Xms12g -Xmx12g` heap; Shuffle's bundled OpenSearch
+~3.8GB against its upstream-default 3g heap; everything else — Kibana, the Wazuh manager,
+Wazuh's own OpenSearch indexer (already 1g-heap, ~1.6GB actual), the Wazuh dashboard,
+Suricata+Zeek, n8n, Ollama — already within a few hundred MB of sane. Total provisioned
+across the three VMs was 8 OCPU/64GB; actual usage was roughly a third of that, almost
+entirely explained by those two hardcoded heaps. That's what got right-sized, and nothing
+else — no blanket cuts to services that were already fine on measurement.
+
+**Found an unexplained container along the way.** `docker stats` on sentinel-soar turned
+up `tenzir-node`, running but referenced by nothing: no compose project label, not in
+Shuffle's own registered-app list, not mentioned anywhere in the repo or deploy scripts.
+Investigated before touching it — `docker inspect` for image/creation-time/command,
+checked Shuffle's app registry API, checked `docker port` (it was publishing
+`0.0.0.0:1514`, directly colliding with Wazuh's own agent-enrollment port), checked bash
+history for how it got there. Origin never resolved. Asked the user how to proceed rather
+than assuming; stopped it (not removed, for reversibility) on their go-ahead.
+
+**Made the full profile's behavior an explicit, verified no-op.** Elasticsearch's
+`ES_JAVA_OPTS` and `mem_limit` in `infra/compose/elastic/docker-compose.yml` became
+`${VAR:-default}` env-var overrides, defaulting to the exact existing hardcoded values.
+Verified backward-compatibility with `docker compose config` (a dry run — resolves the
+merged config without touching any running container) against the live stack *before*
+deploying anything, confirmed the resolved heap and the 16GiB byte-exact mem_limit were
+unchanged. Only then redeployed for real via the live VM, and confirmed via container
+state that `sentinel-elasticsearch` and `sentinel-kibana` stayed Running/Healthy rather
+than being recreated — a genuine no-op on the real system, not just in the compose file.
+
+Shuffle's OpenSearch heap went a different route: a separate, explicitly-opt-in
+`docker-compose.lab.yml` rather than folding into `docker-compose.override.yml`, since
+Compose auto-merges `override.yml` unconditionally and that file is reserved for the
+Phase 25 orborus `BASE_URL` bug fix — a correctness fix that should always apply, not a
+sizing choice someone might not want. Dry-run verified against the live stack the same
+way before ever touching `deploy.sh`.
+
+**Found a real gap while touching `deploy.sh` for this.** The Phase 25 orborus fix had
+only ever been applied to the live host by hand, via ad-hoc `scp` — `deploy.sh` itself
+never actually copied `docker-compose.override.yml` into place. A genuinely fresh
+deployment from this script, today, would have silently hit the exact same "no route to
+host" bug again. Fixed by always copying the override file before `docker compose up`,
+regardless of lab mode, and added `LAB_MODE=1` to additionally layer in
+`docker-compose.lab.yml`. Tested full-mode (no `LAB_MODE`) against the live deployment via
+a scratch directory on sentinel-soar; confirmed `shuffle-backend`/`shuffle-orborus`/
+`shuffle-opensearch` stayed Running (only `shuffle-frontend` recreated, from unrelated
+`.env` drift), that the orborus `BASE_URL` fix was intact, and ran a full live sanity
+check of the automated-response chain end to end (spawned a disposable process, POSTed to
+Shuffle's webhook, confirmed the process was actually killed) before calling it safe.
+
+Wrote `infra/terraform.tfvars.lab.example` (2 OCPU/8GB, 1 OCPU/4GB, 1 OCPU/6GB against the
+default 4/32, 2/16, 2/16) and `docs/deployment-profiles.md` documenting the measured
+numbers, the `tenzir-node` tangent, what changes between profiles and what deliberately
+doesn't, and exact usage steps. Suricata/Zeek needed no code change at all for lab mode —
+`sensors.yml` was already a fully separate, optional compose stack; not running it is
+already the lab toggle.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -1224,10 +1284,22 @@ distribution, automated response outcomes. Built via Kibana's saved-objects API 
 classic (non-Lens) visualizations, committed as an importable NDJSON bundle (see
 Phase 27).
 
+**Deployment profiles**: two profiles of the same architecture — full (the default,
+everything above validated against) and lab (right-sized for smaller infrastructure,
+grounded in real `docker stats` measurements rather than guesswork). Elasticsearch's heap/
+mem_limit and Shuffle's OpenSearch heap are the two things that actually mattered (see
+Phase 28); everything else measured close enough to sane already to leave alone. Full
+profile behavior is unchanged by default — lab sizing is always an explicit opt-in (env
+vars, an extra `-f` compose file, or `LAB_MODE=1`), never a silent change to an existing
+deployment. See `docs/deployment-profiles.md`.
+
 **Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down) and
 a live Atomic Red Team run against it — the Windows side is still validated via replay/
 synthetic events only, now that the Linux side has genuinely live coverage (planned last,
-deliberately).
+deliberately). Also open, not yet started, from the portability research that preceded
+Phase 28: consolidating Wazuh/Shuffle's separate bundled search backends onto one shared
+Elasticsearch, and abstracting the Terraform config to support other cloud providers —
+both deliberately deferred in favor of the lower-risk deployment-profiles work first.
 
 ## Lessons worth writing about
 

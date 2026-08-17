@@ -1,0 +1,20 @@
+# Lab-sized VM overrides -- add these lines to your terraform.tfvars
+# (copied from terraform.tfvars.example) for a small-instance deployment.
+# Everything else in terraform.tfvars.example is unchanged and still required.
+#
+# Sizing is grounded in measured real usage on this project's actual data
+# volume, not guesswork -- see docs/deployment-profiles.md for the numbers
+# and docker compose changes (ES_JAVA_OPTS, LAB_MODE=1 for Shuffle) these
+# instance sizes assume are also applied. Default (full) sizing is
+# elastic_ocpus=4/elastic_memory_gb=32, wazuh_ocpus=2/wazuh_memory_gb=16,
+# soar_ocpus=2/soar_memory_gb=16 -- roughly 3-4x this footprint, most of it
+# idle headroom for a lab-scale event volume.
+
+elastic_ocpus     = 2
+elastic_memory_gb = 8   # ES heap 3g + Kibana 2g + OS/JVM overhead
+
+wazuh_ocpus       = 1
+wazuh_memory_gb   = 4   # manager + indexer (already right-sized upstream) + dashboard; add ~1GB if keeping Suricata/Zeek sensors
+
+soar_ocpus        = 1
+soar_memory_gb    = 6   # n8n + Ollama (headroom for 3B-model inference spikes, not just idle) + Shuffle with LAB_MODE=1

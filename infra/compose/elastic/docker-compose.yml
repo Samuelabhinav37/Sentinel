@@ -25,12 +25,17 @@ services:
       - xpack.security.enabled=true
       - xpack.security.http.ssl.enabled=false
       - xpack.security.transport.ssl.enabled=false
-      - "ES_JAVA_OPTS=-Xms12g -Xmx12g"
+      # Defaults match the original hand-provisioned sizing (measured real
+      # usage: ~13.4GB against a 12g heap, for this project's actual data
+      # volume -- a heap this large is not needed for a lab-scale dataset).
+      # Override both for a smaller deployment; see infra/terraform.tfvars.lab.example
+      # and docs/deployment-profiles.md.
+      - "ES_JAVA_OPTS=${ES_JAVA_OPTS:--Xms12g -Xmx12g}"
     ulimits:
       memlock:
         soft: -1
         hard: -1
-    mem_limit: 16g
+    mem_limit: ${ES_MEM_LIMIT:-16g}
     volumes:
       - esdata:/usr/share/elasticsearch/data
     ports:

@@ -1,0 +1,14 @@
+# Optional lab-sizing override for Shuffle's bundled OpenSearch, which
+# defaults to a 3072m/3072m heap in upstream's docker-compose.yml regardless
+# of actual data volume -- measured real usage on this project's data is
+# ~3.8GB against that default, essentially all of it idle overhead for a
+# lab-scale event count. Not merged automatically like
+# docker-compose.override.yml (that one's a permanent upstream bug fix, not
+# a sizing choice) -- apply explicitly for a small-instance deployment:
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml \
+#     -f docker-compose.lab.yml up -d
+# See docs/deployment-profiles.md.
+services:
+  opensearch:
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
