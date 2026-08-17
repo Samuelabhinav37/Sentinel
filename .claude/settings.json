@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Bash(sigma check*)",
+      "Bash(python detections/scripts/validate_rules.py*)",
+      "Bash(python -m pytest*)",
+      "Bash(pytest*)",
+      "Bash(terraform validate*)",
+      "Bash(terraform fmt*)",
+      "Bash(terraform plan*)",
+      "Bash(docker compose config*)",
+      "Bash(docker compose ps*)",
+      "Bash(docker compose logs*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add*)"
+    ],
+    "ask": [
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(pip install*)",
+      "Bash(docker compose up*)",
+      "Bash(docker compose restart*)",
+      "Bash(scripts/redeploy.sh*)",
+      "Bash(./scripts/redeploy.sh*)"
+    ],
+    "deny": [
+      "Bash(rm -rf*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -fdx*)",
+      "Bash(terraform apply*)",
+      "Bash(terraform destroy*)",
+      "Bash(docker compose down*)",
+      "Bash(sudo*)",
+      "Bash(curl*| sh)",
+      "Bash(curl*| bash)",
+      "Bash(wget*| sh)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.tfvars)",
+      "Read(./**/terraform.tfstate)",
+      "Read(./**/terraform.tfstate.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/id_rsa*)",
+      "Read(./secrets/**)"
+    ]
+  }
+}
