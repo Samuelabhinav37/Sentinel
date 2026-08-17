@@ -938,6 +938,92 @@ Terraform and the per-service Docker Compose stacks are already up, since bundli
 infrastructure-provisioning risk into a routine "redeploy my rules" command is exactly the
 kind of blast-radius mismatch this project's safety practices exist to avoid.
 
+## Phase 25 — Shuffle finally does something: automated response, and four more real bugs
+
+Shuffle SOAR has been running since Phase 6 and had never been wired into anything. The
+goal: when the LLM triage pipeline rates an alert high/critical severity with low
+false-positive likelihood, automatically kill the flagged process — a narrow, bounded,
+reversible-ish action, not host isolation (which would take down `sentinel-wazuh`'s other
+duties as the Wazuh manager and sensor host, and is much harder to undo automatically).
+
+**No SSH app locally.** Shuffle's app store needs internet access to hot-load beyond the
+6 apps already loaded (http, Shuffle AI, Shuffle Tools, Yara, Sigma, email) — no SSH app
+available. Built a purpose-specific bridge instead:
+`infra/compose/wazuh/responder/responder.py`, a stdlib-only Python HTTP service
+(`pid: host` container, mirroring auditbeat's pattern) exposing one endpoint,
+`POST /respond/kill-process`. Deliberately narrow safety design: a shared-secret token
+header, a hard-coded protected-process allowlist (this project's own sensors plus core
+host services — refuses to kill `auditbeat`, `sshd`, `dockerd`, etc. regardless of what a
+caller sends), and every request logged both to a local JSONL file and a new
+`sentinel-response-actions` Elasticsearch index for the same auditability every other
+part of this pipeline has.
+
+**Bug 1 — AppArmor blocks the one thing this service exists to do.** `os.kill()` on a
+real host pid failed with `PermissionError: [Errno 13]` despite `cap_add: [KILL,
+SYS_PTRACE]` and running as root. Docker's default AppArmor profile mediates ptrace/signal
+delivery across PID namespaces independently of the capabilities granted — cross-
+namespace signals need `security_opt: apparmor:unconfined` regardless of capabilities.
+Since this container's entire purpose is being allowed to kill a host process, the actual
+safety boundary is the protected-process allowlist and the auth token, not the sandbox.
+
+**Bug 2 — Tailscale MagicDNS doesn't resolve from inside Docker containers, twice.**
+Shuffle's worker (`orborus`, running the actual HTTP action) failed to resolve
+`sentinel-wazuh`; n8n's container resolved `sentinel-soar` to `127.0.1.1` (its own
+loopback, from `/etc/hosts`) instead of erroring, which is worse — a silent wrong answer
+rather than a clean failure. Both fixed the same way: use the raw Tailscale IP. This
+matches a pattern already established for n8n's `N8N_ELASTIC_URL` (raw IP, not hostname)
+that wasn't recognized as *the same problem* until it recurred in a new context.
+
+**Bug 3 — orborus couldn't reach its own backend at all**, independent of my workflow:
+`BASE_URL=http://${OUTER_HOSTNAME}:5001` in upstream Shuffle v2.2.1's docker-compose.yml
+has the worker call the backend via the host's Tailscale IP — a hairpin NAT path that
+Docker's bridge networking doesn't support, so every queue poll failed with "no route to
+host." Every Shuffle workflow built since Phase 6 would have silently never executed;
+webhook triggers report success immediately (the backend receiving the trigger), so
+nothing about creating or firing a workflow would have surfaced this. Only actually
+building the first real workflow and checking whether the action *ran* (not just whether
+the trigger *accepted*) found it. Fixed with a `docker-compose.override.yml` (auto-merged
+by Compose) rather than patching the vendored file, so `deploy.sh`'s `git checkout` stays
+clean.
+
+**Bug 4 — a caller-side JSON-typing mismatch.** Shuffle's `$exec.pid` variable
+substitution is literal text replacement into the body template; `"pid": "$exec.pid"`
+(quoted, matching the n8n/Kibana template style established earlier) rendered as
+`"pid": "84352"` — a JSON string — which the responder's `isinstance(pid, int)` check
+correctly rejected. Fixed both ends: unquoted the template (`"pid": $exec.pid`) and made
+the responder accept a numeric string too, since a caller-side typing quirk isn't a
+reason to reject an otherwise well-formed request.
+
+**Wired the gate into n8n's push pipeline**: a new `Check Response Gate` code node after
+`Parse Triage + Auth`, filtering to severity in (high, critical) AND false-positive
+likelihood low AND a valid pid, feeding a new `Call Shuffle Response` HTTP node. Verified
+the gate's real behavior against genuine (not synthetic) triage output, not just its
+code: two live-fired `/etc/shadow` tests came back `severity: high, FP: high` and
+`severity: low, FP: low` respectively — different runs of the identically-worded prompt
+against the same 3B local model, correctly withheld both times. This is expected variance
+from a small local model doing zero-shot judgment, not a bug, and it demonstrates the
+gate does real filtering rather than rubber-stamping.
+
+**Getting one clean full-chain confirmation took a deliberate, reverted bypass.** Waiting
+for a live-fired alert to naturally land on `high`/`low` was consuming turns without
+result. Rather than keep re-rolling the LLM, temporarily patched the gate's condition
+to `pid > 1` only (marked `TEMP-TEST-FORCE-ELIGIBLE`), fetched the live-deployed
+workflow first so the revert would be an exact byte-for-byte restore, ran one real
+alert through the full chain, then reverted and diffed to confirm the production
+condition (`['high','critical'].includes(severity) && ...`) was back. That run reached
+the responder with the real alert's pid and a correctly-built reason string — the
+mechanical path (Kibana → n8n → Ollama → gate → Shuffle → responder) is fully proven;
+what a natural run additionally needs is the LLM cooperating and the flagged process
+still being alive when the ~2-6 minute round trip completes, both independently
+confirmed working in isolation (a direct Shuffle→responder call cleanly killed and
+logged a live test process twice).
+
+Committed the workflow as IaC (`infra/compose/soar/shuffle/sentinel-auto-respond.json`,
+scrubbed of the responder token and Shuffle's embedded per-node icon blobs, which alone
+made the raw export 2.5x larger) plus `deploy-workflow.sh`, matching the n8n pattern —
+looked up by name for update-vs-create, since Shuffle's create endpoint has the same
+no-upsert limitation n8n's does.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -954,6 +1040,8 @@ setup's ingress design):
 | Windows telemetry target | — | torn down; fixed userdata script ready to redeploy |
 | auditbeat (Linux telemetry) | sentinel-wazuh | Docker container, host network, feeding `auditbeat-linux` on sentinel-elastic |
 | n8n push triage webhook | sentinel-soar | `http://100.90.159.33:5678/webhook/sentinel-alert-push`, called directly by a Kibana `.webhook` connector action |
+| sentinel-responder | sentinel-wazuh | Docker container, host network + pid, `:8088`, executes automated response actions |
+| Shuffle "Sentinel Auto-Respond" workflow | sentinel-soar | webhook-triggered by n8n's response gate, calls sentinel-responder |
 
 **License**: running under a 30-day Elastic trial (started this session via
 `_license/start_trial`, expires 2026-09-15), which unlocked the Gold-tier `.webhook`
@@ -1022,14 +1110,23 @@ hand-built synthetic event, or genuinely live execution, weakest to strongest), 
 Linux entries carry this project's first real measured `mttd_seconds` values instead of
 `null`.
 
+**Automated response**: Shuffle SOAR, running unused since Phase 6, now does one bounded
+thing — kills a single flagged process — when n8n's push triage rates an alert high or
+critical severity with low false-positive likelihood (see Phase 25). Found and fixed four
+real bugs building it: AppArmor blocking cross-namespace signal delivery even with the
+right capabilities granted, Tailscale MagicDNS not resolving from inside two different
+containers, a pre-existing upstream Shuffle networking bug that meant *no* workflow this
+project ever builds would actually execute, and a JSON-quoting mismatch in variable
+substitution. Every response action is logged to `sentinel-response-actions` for the same
+auditability the rest of the pipeline has, and the responder independently refuses to
+touch protected system processes regardless of what it's told.
+
 **Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down) and
 a live Atomic Red Team run against it — the Windows side is still validated via replay/
 synthetic events only, now that the Linux side has genuinely live coverage (planned last,
-deliberately, once the rest of the platform work below is done); Shuffle SOAR has been
-running the entire project and has never been wired into anything — triage is fully
-automated but response still isn't; no CI validating Sigma rules before they reach the
-live cluster; no dashboards for MTTD/alert-volume/ATT&CK-coverage trending, even though
-the underlying data (`validation.yml`, `sentinel-triage`) already exists.
+deliberately); no CI validating Sigma rules before they reach the live cluster; no
+dashboards for MTTD/alert-volume/ATT&CK-coverage trending, even though the underlying
+data (`validation.yml`, `sentinel-triage`) already exists.
 
 ## Lessons worth writing about
 
@@ -1161,3 +1258,21 @@ the underlying data (`validation.yml`, `sentinel-triage`) already exists.
   noticing the push pipeline had gone quiet. The fix isn't "remember to run the other
   scripts too" (that's the bug, not the fix) — it's a single entry point that always runs
   them together.
+- **"The trigger fired successfully" and "the workflow actually ran" are different
+  claims, and a platform can make the first one true forever while the second one is
+  silently false.** Shuffle's webhook accepted every request and returned
+  `{"success": true}` throughout — that response comes from the backend receiving the
+  trigger, not from the workflow completing. The worker that actually executes actions
+  (`orborus`) had been unable to reach the backend since Phase 6, for a networking reason
+  with nothing to do with any workflow's own configuration. Every workflow this project
+  could have built up to this point would have looked like it worked and done nothing.
+  Only checking execution status (not trigger status) after building the first real
+  workflow surfaced it.
+- **A capability granted at the Docker level and a capability enforced at the AppArmor
+  level are two separate gates, and passing one says nothing about the other.**
+  `cap_add: [KILL, SYS_PTRACE]` plus running as root looks like it should be sufficient
+  for a container to signal a process outside its own PID namespace — Docker's default
+  AppArmor profile mediates that signal delivery independently of what capabilities were
+  granted, and denies it regardless. The fix (`apparmor:unconfined`) only made sense once
+  the two layers were understood as separate; adding more capabilities would never have
+  helped, because capabilities weren't what was blocking it.

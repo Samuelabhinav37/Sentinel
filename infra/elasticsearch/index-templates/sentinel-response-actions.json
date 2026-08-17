@@ -1,0 +1,18 @@
+{
+  "index_patterns": ["sentinel-response-actions"],
+  "priority": 200,
+  "template": {
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "action": { "type": "keyword" },
+        "requested_pid": { "type": "long" },
+        "comm": { "type": "keyword" },
+        "result": { "type": "keyword" },
+        "detail": { "type": "keyword" },
+        "reason": { "type": "text" },
+        "alert_id": { "type": "keyword" }
+      }
+    }
+  }
+}

@@ -88,6 +88,32 @@
         "jsonBody": "={{$json.doc}}",
         "options": {}
       }
+    },
+    {
+      "id": "code-response-gate",
+      "name": "Check Response Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 200],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Automated response is deliberately narrow: only high/critical severity\n// AND low false-positive likelihood, AND only a bounded, reversible action\n// (kill one process by pid -- see infra/compose/wazuh/responder/responder.py,\n// which also independently refuses to touch protected system processes\n// regardless of what gets sent here). Items that don't qualify are dropped\n// -- this node's output IS the response-triggered subset, not a pass/fail\n// flag for a downstream branch.\nconst results = [];\nfor (const item of $input.all()) {\n  const doc = item.json.doc;\n  const triage = doc.triage || {};\n  const alert = doc.alert || {};\n\n  const severity = (triage.severity || '').toLowerCase();\n  const fpLikelihood = (triage.false_positive_likelihood || '').toLowerCase();\n  const pid = alert.process && alert.process.pid;\n\n  const eligible = ['high', 'critical'].includes(severity)\n    && fpLikelihood === 'low'\n    && typeof pid === 'number'\n    && pid > 1;\n\n  if (!eligible) continue;\n\n  const ruleName = (alert.kibana && alert.kibana.alert && alert.kibana.alert.rule && alert.kibana.alert.rule.name) || 'Unknown rule';\n  const hostName = (alert.host && alert.host.name) || 'unknown-host';\n\n  results.push({\n    json: {\n      pid,\n      reason: `Automated response: ${severity} severity, ${fpLikelihood} FP likelihood - ${ruleName} on ${hostName}`,\n      alert_id: doc.alert_id\n    }\n  });\n}\nreturn results;"
+      }
+    },
+    {
+      "id": "http-call-shuffle",
+      "name": "Call Shuffle Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_SHUFFLE_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"pid\": $json.pid, \"reason\": $json.reason, \"alert_id\": $json.alert_id } }}",
+        "options": {}
+      }
     }
   ],
   "connections": {
@@ -104,7 +130,13 @@
       "main": [[{ "node": "Parse Triage + Auth", "type": "main", "index": 0 }]]
     },
     "Parse Triage + Auth": {
-      "main": [[{ "node": "Write to Elasticsearch", "type": "main", "index": 0 }]]
+      "main": [[
+        { "node": "Write to Elasticsearch", "type": "main", "index": 0 },
+        { "node": "Check Response Gate", "type": "main", "index": 0 }
+      ]]
+    },
+    "Check Response Gate": {
+      "main": [[{ "node": "Call Shuffle Response", "type": "main", "index": 0 }]]
     }
   }
 }

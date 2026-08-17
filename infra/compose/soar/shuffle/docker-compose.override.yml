@@ -1,0 +1,20 @@
+# Fixes a real bug in upstream Shuffle v2.2.1's docker-compose.yml: orborus
+# (the worker that actually executes workflow actions) is given
+# BASE_URL=http://${OUTER_HOSTNAME}:5001 -- OUTER_HOSTNAME is the Tailscale
+# hostname/IP meant for URLs shown to users (webhook links, the frontend
+# origin), not for container-to-container traffic. orborus and the backend
+# are sibling containers on the same `shuffle` Docker network, and a
+# container can't route to the host's Tailscale interface from inside that
+# bridge network -- every queue poll fails with "no route to host", so
+# nothing ever actually executes even though workflows accept webhook
+# triggers and report "success" on the trigger call itself. Found live-fire
+# testing the first real Shuffle workflow this project built; see
+# docs/build-log.md.
+#
+# Auto-merged by `docker compose up` whenever docker-compose.override.yml
+# sits next to docker-compose.yml -- copy this file into the Shuffle clone
+# (see deploy.sh) rather than editing the vendored compose file directly.
+services:
+  orborus:
+    environment:
+      - BASE_URL=http://shuffle-backend:5001

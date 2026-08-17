@@ -1,0 +1,27 @@
+name: sentinel-responder
+
+services:
+  responder:
+    image: python:3.12-slim
+    container_name: sentinel-responder
+    restart: unless-stopped
+    pid: host
+    network_mode: host
+    cap_add:
+      - KILL
+      - SYS_PTRACE
+    # AppArmor's ptrace mediation blocks cross-namespace signal delivery even
+    # with CAP_KILL/CAP_SYS_PTRACE granted at the Docker level -- the actual
+    # safety boundary here is the app-level protected-process allowlist and
+    # the shared-secret token, not the container sandbox (this service's
+    # entire job is to be allowed to kill a host process).
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ./responder/responder.py:/responder.py:ro
+      - /var/log/sentinel-responder:/var/log/sentinel-responder
+    environment:
+      - RESPONDER_TOKEN=${RESPONDER_TOKEN}
+      - ELASTIC_URL=${ELASTIC_URL}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    command: ["python3", "/responder.py"]

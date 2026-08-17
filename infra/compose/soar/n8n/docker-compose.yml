@@ -22,6 +22,12 @@ services:
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - N8N_ELASTIC_URL=${N8N_ELASTIC_URL}
       - N8N_ELASTIC_PASSWORD=${N8N_ELASTIC_PASSWORD}
+      # Shuffle's automated-response workflow webhook. Uses the raw Tailscale
+      # IP, not the "sentinel-soar" hostname -- from inside a container on
+      # this same host, that hostname resolves via /etc/hosts to the local
+      # loopback (127.0.1.1), not Tailscale MagicDNS, so it silently
+      # connection-refuses instead of reaching Shuffle.
+      - N8N_SHUFFLE_WEBHOOK_URL=${N8N_SHUFFLE_WEBHOOK_URL}
     ports:
       - "5678:5678"
     volumes:
