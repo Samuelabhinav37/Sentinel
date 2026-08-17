@@ -1024,6 +1024,49 @@ made the raw export 2.5x larger) plus `deploy-workflow.sh`, matching the n8n pat
 looked up by name for update-vs-create, since Shuffle's create endpoint has the same
 no-upsert limitation n8n's does.
 
+## Phase 26 — the existing CI was already stale, and a real validation gate
+
+`.github/workflows/sigma-ci.yml` has existed since early in the project (Phase 1-era),
+running `sigma check`, converting every rule to EQL against `ecs_windows` and to SPL
+against `splunk_windows`, and building an ATT&CK Navigator coverage layer. It was never
+revisited after Phase 22 added the first Linux rules.
+
+**The existing CI has been giving false confidence for two phases.** `ecs_windows` and
+`splunk_windows` are Windows-only pysigma pipelines — no `ecs_linux` pipeline exists
+(confirmed back in Phase 22; every Linux rule is hand-converted to EQL directly against
+auditbeat's real field shape instead). Running these converters against the *whole*
+`detections/rules/` directory doesn't error on a Linux rule, though — pysigma just falls
+through to raw, unmapped Sigma field names (`Image`, `CommandLine`) for any logsource its
+pipeline doesn't recognize, and reports success. CI has been silently "passing" on 13 of
+18 rules while producing output that has nothing to do with what's actually deployed,
+since Phase 22. Nobody would have noticed without deliberately re-examining what the
+converter output actually contained for a Linux rule — the run was green throughout.
+Fixed by scoping both conversion steps to `detections/rules/proc_creation_win_*.yml`
+only, where the check is real.
+
+**Added the check that actually covers every rule regardless of platform**:
+`detections/scripts/validate_rules.py`, run entirely offline (GitHub Actions can't reach
+anything behind Tailscale, so this validates structure, not "does it fire live" — that
+stays a manual step against the real cluster, matching how every rule in this project has
+actually been validated so far). Checks: every `rules/*.yml` pairs with a
+`deployed/*.json` and their ids match; every deployed rule has all required fields
+including the `sentinel-sigma` tag the triage pipelines filter on; every deployed
+`rule_id` has a `validation.yml` entry; and two regression checks encoding the real
+`regex~` bugs found live-fire testing the encoded-PowerShell rule (Phase 21) directly —
+no `(?i)` inline flag, and the pattern must be `.*`-wrapped on both ends, since EQL's
+`regex~` requires a full-string match. Proved each check actually catches what it claims
+to by deliberately reintroducing both `regex~` bugs into a live deployed rule file and a
+broken `validation.yml` entry, confirming `validate_rules.py` failed correctly (exit 1)
+in both cases, then reverting via `git checkout` before committing anything.
+
+Considered using the `eql` PyPI package (Endgame's reference EQL parser) to validate
+query syntax directly rather than just checking for the two known bug patterns —
+installed it and tried parsing a real deployed query first rather than assuming it would
+work. It implements Endgame's original EQL dialect (`wildcard(field, "*value*")`), not
+Elastic's extended dialect this project's queries actually use (`field like~ (...)`,
+`field in (...)`) — it rejected every single valid query in the repo. Would have made CI
+actively worse (constant false failures on correct rules) rather than better; not used.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -1121,12 +1164,18 @@ substitution. Every response action is logged to `sentinel-response-actions` for
 auditability the rest of the pipeline has, and the responder independently refuses to
 touch protected system processes regardless of what it's told.
 
+**CI**: `.github/workflows/sigma-ci.yml` now actually validates every rule regardless of
+platform — `sigma check` plus `detections/scripts/validate_rules.py` (pairing, required
+fields, `validation.yml` coverage, and regression checks for the two real `regex~` bugs
+found in Phase 21). The pysigma-conversion smoke tests (EQL/Splunk) are correctly scoped
+to Windows-only rules now, having silently covered nothing meaningful for the 13 Linux
+rules since Phase 22 (see Phase 26).
+
 **Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down) and
 a live Atomic Red Team run against it — the Windows side is still validated via replay/
 synthetic events only, now that the Linux side has genuinely live coverage (planned last,
-deliberately); no CI validating Sigma rules before they reach the live cluster; no
-dashboards for MTTD/alert-volume/ATT&CK-coverage trending, even though the underlying
-data (`validation.yml`, `sentinel-triage`) already exists.
+deliberately); no dashboards for MTTD/alert-volume/ATT&CK-coverage trending, even though
+the underlying data (`validation.yml`, `sentinel-triage`) already exists.
 
 ## Lessons worth writing about
 
@@ -1276,3 +1325,19 @@ data (`validation.yml`, `sentinel-triage`) already exists.
   granted, and denies it regardless. The fix (`apparmor:unconfined`) only made sense once
   the two layers were understood as separate; adding more capabilities would never have
   helped, because capabilities weren't what was blocking it.
+- **A green CI check proves the check ran, not that it checked the right thing.** The
+  Windows-only EQL/Splunk conversion steps kept exiting 0 for two full phases after Linux
+  rules were added, because pysigma silently falls back to unmapped field names instead
+  of erroring when a rule's logsource doesn't match any pipeline it knows — it's a
+  legitimate feature (lets you see raw Sigma structure with no pipeline at all) that
+  becomes a false-confidence trap when a broader glob accidentally includes rules the
+  pipeline was never meant to handle. A CI step's real coverage is only as good as
+  whether someone has actually read what it produces for every input class it runs
+  against, not just whether it returns success.
+- **Trying the "obviously right" tool before assuming it's the answer sometimes saves
+  you from making things worse.** `eql` (the reference EQL implementation on PyPI) looked
+  like exactly the missing piece for validating EQL syntax offline — installing it and
+  testing it against one real query first, rather than wiring it into CI on the strength
+  of its name and description, showed it implements a different, incompatible dialect
+  entirely. Wiring it in unverified would have meant every future PR failing CI on
+  correct, already-deployed queries.

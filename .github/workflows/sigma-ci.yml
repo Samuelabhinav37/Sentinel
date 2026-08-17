@@ -4,9 +4,11 @@ on:
   push:
     paths:
       - "detections/**"
+      - ".github/workflows/sigma-ci.yml"
   pull_request:
     paths:
       - "detections/**"
+      - ".github/workflows/sigma-ci.yml"
 
 jobs:
   validate-and-convert:
@@ -35,11 +37,28 @@ jobs:
       - name: Validate Sigma rule syntax
         run: sigma check detections/rules/
 
-      - name: Convert to Elasticsearch (EQL) — proves the rule is deployable to the live SIEM
-        run: sigma convert -t eql -p ecs_windows detections/rules/
+      # ecs_windows/splunk_windows are Windows-only pipelines: no ecs_linux
+      # pipeline exists in pysigma (checked -- see docs/build-log.md), so
+      # every Linux rule (product: linux) is hand-converted to EQL directly
+      # against the real auditbeat field shape, not run through sigma-cli.
+      # Running these converters against the full rules/ directory used to
+      # silently "pass" on Linux rules too, quietly falling back to raw
+      # unmapped Sigma field names (Image/CommandLine) instead of erroring
+      # -- giving false confidence that never reflected what's actually
+      # deployed. Scoped to Windows rules only, where the check is real.
+      - name: Convert Windows rules to Elasticsearch (EQL) — proves the rule is deployable to the live SIEM
+        run: sigma convert -t eql -p ecs_windows detections/rules/proc_creation_win_*.yml
 
-      - name: Convert to Splunk (SPL) — proves detection portability
-        run: sigma convert -t splunk -p splunk_windows detections/rules/
+      - name: Convert Windows rules to Splunk (SPL) — proves detection portability
+        run: sigma convert -t splunk -p splunk_windows detections/rules/proc_creation_win_*.yml
+
+      # The real deployability check for every rule, Windows and Linux: does
+      # detections/deployed/*.json (what's actually PUT to Kibana) exist,
+      # pair with a rules/*.yml, carry every required field, have a
+      # validation.yml entry, and avoid the two regex~ bugs this project has
+      # already hit once. See detections/scripts/validate_rules.py.
+      - name: Validate deployed rules (pairing, required fields, validation.yml coverage, known regression classes)
+        run: python detections/scripts/validate_rules.py
 
       - name: Build ATT&CK Navigator coverage layer
         run: |
