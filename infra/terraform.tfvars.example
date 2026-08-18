@@ -15,3 +15,9 @@ ssh_public_key_path = "~/.ssh/id_ed25519.pub"
 
 # Reusable or ephemeral key from https://login.tailscale.com/admin/settings/keys
 tailscale_authkey = "tskey-auth-xxxxx"
+
+# Only needed when redeploying the disposable Windows telemetry target
+# (infra/windows_target.tf) - Winlogbeat on that box ships to this Elasticsearch using
+# the same elastic-user credential auditbeat already uses on the Linux side.
+elastic_url      = "https://100.x.x.x:9200"
+elastic_password = "xxxxx"

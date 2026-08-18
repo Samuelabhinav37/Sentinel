@@ -35,7 +35,11 @@ resource "oci_core_instance" "windows_target" {
   metadata = {
     user_data = base64encode(templatefile(
       "${path.module}/windows_target_userdata.ps1.tftpl",
-      { tailscale_authkey = var.tailscale_authkey }
+      {
+        tailscale_authkey = var.tailscale_authkey
+        elastic_url       = var.elastic_url
+        elastic_password  = var.elastic_password
+      }
     ))
   }
 

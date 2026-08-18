@@ -38,6 +38,19 @@ variable "tailscale_authkey" {
   sensitive   = true
 }
 
+# --- Windows telemetry target (see infra/windows_target.tf) ---
+variable "elastic_url" {
+  type        = string
+  description = "Elasticsearch URL (Tailscale address, e.g. https://100.x.x.x:9200) that Winlogbeat on the Windows target ships to"
+  sensitive   = true
+}
+
+variable "elastic_password" {
+  type        = string
+  description = "Password for the elastic superuser, used by Winlogbeat on the Windows target — same credential auditbeat already uses (infra/compose/wazuh/auditbeat)"
+  sensitive   = true
+}
+
 # --- Network ---
 variable "vcn_cidr" {
   type    = string

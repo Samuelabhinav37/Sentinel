@@ -174,9 +174,12 @@ All three service stacks (Elastic, Wazuh + Suricata/Zeek, Shuffle + n8n) are dep
 verified live over Tailscale. All 18 Sigma rules are live detection rules with confirmed
 real-world fire evidence. The LLM triage pipeline, automated response, and the SOC dashboard
 are built and running. Not yet done: a live Atomic Red Team run against a redeployed Windows
-target (currently torn down — the Windows side is validated via replay/synthetic events only)
-and consolidating the three separate Lucene-based search backends this architecture currently
-runs side by side.
+target (currently torn down — the Windows side is validated via replay/synthetic events only;
+the redeploy path now provisions Sysmon + Winlogbeat, see `docs/build-log.md` Phase 29).
+Consolidating the project's three separate search backends (Elasticsearch, Wazuh's indexer,
+Shuffle's OpenSearch) was investigated and deliberately rejected — see Phase 29 — since two
+of the three are vendor-coupled application datastores, not redundant copies of the same
+telemetry.
 
 ## Tools & References
 

@@ -1173,6 +1173,90 @@ doesn't, and exact usage steps. Suricata/Zeek needed no code change at all for l
 `sensors.yml` was already a fully separate, optional compose stack; not running it is
 already the lab toggle.
 
+## Phase 29 — closing out the three deferred items: one shipped, one rejected, one scoped
+
+The three things Phase 28 deliberately deferred, picked back up in order of risk.
+
+**Search backend consolidation — investigated, then rejected.** The premise going in was
+that Wazuh's indexer and Shuffle's bundled OpenSearch were redundant copies of the same
+kind of data the primary Elasticsearch already holds, and could be merged onto one
+cluster. Reading how each is actually wired killed that premise:
+
+- `infra/compose/wazuh/docker-compose.yml` shows `wazuh.manager` shipping to
+  `wazuh.indexer` over Filebeat with Wazuh's own SSL certs, and `wazuh.dashboard` reading
+  from that same indexer through Wazuh's own security-plugin and index layout. The
+  indexer isn't a generic Elasticsearch with Wazuh's data in it — the dashboard, alerting,
+  and API are all built against that specific OpenSearch fork's schema. Repointing the
+  manager's output at the shared Elasticsearch would still leave the dashboard broken,
+  since the dashboard talks to the indexer directly, not through the manager.
+- Shuffle's OpenSearch (`infra/compose/soar/shuffle/`, vendored from upstream's own
+  `docker-compose.yml`, see the `docker-compose.override.yml` note from Phase 25) isn't
+  security telemetry at all — it's Shuffle's own application database: workflows,
+  executions, users. There's nothing to "consolidate" with `sentinel-triage` or
+  `sentinel-response-actions`; it's a different kind of data serving a different purpose.
+
+So "three separate Lucene-based search backends" turned out to describe a real but
+*load-bearing* vendor boundary, not unconsolidated tech debt. Forcing a merge would have
+meant either forking Wazuh's dashboard plugin or reimplementing Shuffle's storage layer —
+both far more invasive than the "consolidation" framing suggested, for a benefit (one
+fewer OpenSearch container) that doesn't actually reduce what's being duplicated. Decision:
+leave all three running as designed, and stop counting this as open work.
+
+**Windows live-fire validation — the real gap wasn't the VM, it was the userdata.**
+`terraform plan -target=oci_core_instance.windows_target` came back clean (the VM
+definition itself was always fine), but `windows_target_userdata.ps1.tftpl` only ever
+installed Tailscale — no Sysmon, no Winlogbeat. The Windows target was "ready to redeploy"
+in the sense of not erroring, but would have come up with no telemetry at all, so the
+Windows rules would have stayed replay/synthetic-only even after a redeploy.
+
+Fixed by extending the userdata script, keeping the same download-then-install shape
+already used for Tailscale:
+- Sysmon, installed with the SwiftOnSecurity baseline config — process-creation telemetry
+  with command lines, which is all five Windows rules actually need.
+- Winlogbeat 9.2.1 (matched to the Elastic stack's 9.2.1), configured with the built-in
+  `sysmon` module rather than raw `winlog.event_data.*` collection — the module's ingest
+  pipeline is what maps Sysmon's fields onto the `process.executable` / `process.command_line`
+  ECS fields the deployed rules query (confirmed by reading the actual compiled queries in
+  `detections/deployed/proc_creation_win_*.json`, not assumed). `winlogbeat setup
+  --pipelines` runs explicitly during provisioning so the mapping is guaranteed loaded,
+  matching the same credential (`elastic` user, `ELASTIC_PASSWORD`-equivalent) auditbeat
+  already uses on the Linux side.
+
+Two new sensitive Terraform variables (`elastic_url`, `elastic_password`) carry the
+connection details in, the same way `tailscale_authkey` already does — `terraform validate`
+passes. Not yet done, because it requires a human-triggered `terraform apply` and then
+live attack execution against a running box: actually standing the VM back up, confirming
+Winlogbeat ships real events, running the five techniques for real, and replacing the
+replay/synthetic evidence in `detections/tests/validation.yml` with measured MTTD. This
+config is provisional in the same way every other part of this project has been until
+proven by firing something real at it — if the Sysmon-module field mapping turns out to
+need adjustment once live data is flowing, that'll get fixed then, the same way real bugs
+turned up live-testing the Linux rules in Phase 22 and 24.
+
+**Terraform multi-cloud abstraction — a real second provider, not a paper interface.**
+`infra/modules/instance` wraps `oci_core_instance` directly with nothing abstracted out,
+so proving portability meant actually building a second implementation rather than just
+restructuring variable names. Built `infra/aws/` as a fully separate Terraform root
+(own state, own `init`/`plan`/`apply`) — deliberately not one config that branches
+between providers, since `oci_core_instance` and `aws_instance` are different resource
+types with different schemas, and the live OCI deployment can't be put at risk by this
+work regardless of how it turns out.
+
+`infra/modules/instance-aws` reuses the OCI module's cloud-init template unmodified
+(`${path.module}/../instance/cloud-init/base.yaml.tftpl`) — cloud-init is
+provider-agnostic, so the actual provisioning logic (Docker, Tailscale) is identical by
+construction, not by keeping two scripts in sync by hand. `infra/aws/network.tf` mirrors
+the OCI security list's exact ingress rules (SSH + Tailscale only). Sizing and SSH-key
+handling had to be reimplemented per-provider since OCI's flexible-shape `ocpus`/
+`memory_gb` and raw-public-key metadata don't have AWS equivalents — see
+`docs/multi-cloud.md` for the full breakdown of what's shared vs. reimplemented, and why.
+
+`terraform validate` passes on the AWS root with no AWS credentials present. No AWS CLI
+or credentials exist in this environment, so `terraform plan`/`apply` haven't been
+exercised against a real AWS account — stated plainly rather than assumed working. The
+module is structurally complete and ready for that test whenever real AWS credentials
+are available.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -1293,13 +1377,22 @@ profile behavior is unchanged by default — lab sizing is always an explicit op
 vars, an extra `-f` compose file, or `LAB_MODE=1`), never a silent change to an existing
 deployment. See `docs/deployment-profiles.md`.
 
-**Not yet done**: Sysmon/Winlogbeat on a live Windows target (VM currently torn down) and
-a live Atomic Red Team run against it — the Windows side is still validated via replay/
-synthetic events only, now that the Linux side has genuinely live coverage (planned last,
-deliberately). Also open, not yet started, from the portability research that preceded
-Phase 28: consolidating Wazuh/Shuffle's separate bundled search backends onto one shared
-Elasticsearch, and abstracting the Terraform config to support other cloud providers —
-both deliberately deferred in favor of the lower-risk deployment-profiles work first.
+**Multi-cloud**: `infra/aws/` is a complete second implementation of the three-VM
+architecture on AWS, structurally independent of the live OCI deployment (separate root,
+separate state). `terraform validate` passes; `terraform plan`/`apply` haven't been run
+against a real AWS account since no AWS credentials exist in this environment. See
+`docs/multi-cloud.md`.
+
+**Search backend consolidation**: investigated and deliberately rejected, not deferred —
+Wazuh's indexer and Shuffle's OpenSearch are vendor-coupled application datastores, not
+redundant telemetry copies. See Phase 29.
+
+**Not yet done**: Sysmon/Winlogbeat provisioning now exists in
+`windows_target_userdata.ps1.tftpl`, but the Windows target itself is still torn down —
+redeploying it (human-run `terraform apply`), confirming live telemetry, and running a
+live Atomic Red Team pass against it (replacing the current replay/synthetic-only
+evidence for the 5 Windows rules) is the next concrete step. A real `terraform plan`/
+`apply` of the new AWS root against an actual AWS account is the other open item.
 
 ## Lessons worth writing about
 

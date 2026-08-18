@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored - never commit it.
+#
+# AWS credentials come from the standard chain (env vars, ~/.aws/credentials, or an IAM
+# role) - nothing AWS-credential-related goes in this file.
+
+aws_region = "us-east-1"
+
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# Reusable or ephemeral key from https://login.tailscale.com/admin/settings/keys
+tailscale_authkey = "tskey-auth-xxxxx"

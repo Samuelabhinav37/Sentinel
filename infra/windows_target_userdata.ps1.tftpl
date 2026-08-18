@@ -35,3 +35,77 @@ if (-not $installed) {
 Log "Running tailscale up"
 & $tailscaleExe up --authkey=${tailscale_authkey} --hostname=sentinel-win-target
 Log "tailscale up exit code: $LASTEXITCODE"
+
+# --- Sysmon: process-creation telemetry the Windows Sigma rules actually query ---
+# (Event ID 1 / process_creation. SwiftOnSecurity's config is the widely-used baseline
+# that logs process creation with command lines, which is all these rules need.)
+$sysmonZip = "$env:TEMP\Sysmon.zip"
+$sysmonDir = "$env:TEMP\Sysmon"
+$sysmonConfig = "$env:TEMP\sysmonconfig.xml"
+$sysmonExe = "$sysmonDir\Sysmon64.exe"
+
+Log "Downloading Sysmon"
+Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile $sysmonZip -UseBasicParsing
+Expand-Archive -Path $sysmonZip -DestinationPath $sysmonDir -Force
+
+Log "Downloading SwiftOnSecurity Sysmon config"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml" -OutFile $sysmonConfig -UseBasicParsing
+
+Log "Installing Sysmon"
+$proc = Start-Process $sysmonExe -ArgumentList "-accepteula -i `"$sysmonConfig`"" -Wait -PassThru
+Log "Sysmon install exit code: $($proc.ExitCode)"
+if ($proc.ExitCode -ne 0) {
+    Log "FATAL: Sysmon install failed"
+    exit 1
+}
+
+# --- Winlogbeat: ships Sysmon (via the built-in ECS-mapping module) + Security/System
+# logs to the shared Elasticsearch, same elastic-user credential auditbeat already uses
+# on the Linux side (infra/compose/wazuh/auditbeat). The Sysmon module's ingest pipeline
+# is what populates the process.executable / process.command_line ECS fields the
+# deployed Windows detection rules query - see detections/deployed/proc_creation_win_*.json.
+$winlogbeatVersion = "9.2.1"
+$winlogbeatZip = "$env:TEMP\winlogbeat.zip"
+$winlogbeatDir = "C:\Program Files\winlogbeat"
+
+Log "Downloading Winlogbeat $winlogbeatVersion"
+Invoke-WebRequest -Uri "https://artifacts.elastic.co/downloads/beats/winlogbeat/winlogbeat-$winlogbeatVersion-windows-x86_64.zip" -OutFile $winlogbeatZip -UseBasicParsing
+Expand-Archive -Path $winlogbeatZip -DestinationPath "$env:TEMP\winlogbeat-extract" -Force
+$extractedDir = Get-ChildItem "$env:TEMP\winlogbeat-extract" -Directory | Select-Object -First 1
+Move-Item $extractedDir.FullName $winlogbeatDir
+
+$winlogbeatConfig = @"
+winlogbeat.event_logs:
+  - name: Security
+  - name: System
+
+winlogbeat.modules:
+  - module: sysmon
+    enabled: true
+
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+output.elasticsearch:
+  hosts: ["${elastic_url}"]
+  username: "elastic"
+  password: "${elastic_password}"
+
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: C:\ProgramData\winlogbeat\logs
+"@
+Set-Content -Path "$winlogbeatDir\winlogbeat.yml" -Value $winlogbeatConfig -Encoding UTF8
+
+Log "Installing Winlogbeat service"
+Push-Location $winlogbeatDir
+& powershell.exe -ExecutionPolicy Bypass -File ".\install-service-winlogbeat.ps1"
+Log "Loading Sysmon module ingest pipeline into Elasticsearch"
+& ".\winlogbeat.exe" setup --pipelines -e -c ".\winlogbeat.yml" 2>&1 | Out-File -FilePath $log -Append
+Pop-Location
+
+Log "Starting Winlogbeat service"
+Set-Service -Name winlogbeat -StartupType Automatic
+Start-Service -Name winlogbeat
+Log "Winlogbeat service status: $((Get-Service winlogbeat).Status)"
