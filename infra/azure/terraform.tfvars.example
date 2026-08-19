@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored - never commit it.
+#
+# Azure credentials come from the standard chain (an `az login` session, or ARM_* env
+# vars for a service principal: ARM_SUBSCRIPTION_ID, ARM_TENANT_ID, ARM_CLIENT_ID,
+# ARM_CLIENT_SECRET) - nothing Azure-credential-related goes in this file.
+
+location = "eastus"
+
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# Reusable or ephemeral key from https://login.tailscale.com/admin/settings/keys
+tailscale_authkey = "tskey-auth-xxxxx"

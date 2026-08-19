@@ -1,8 +1,8 @@
-variable "ami_id" {
+variable "resource_group_name" {
   type = string
 }
 
-variable "instance_type" {
+variable "location" {
   type = string
 }
 
@@ -10,13 +10,18 @@ variable "subnet_id" {
   type = string
 }
 
-variable "security_group_id" {
+variable "vm_size" {
   type = string
 }
 
-variable "key_name" {
+variable "admin_username" {
+  type    = string
+  default = "sentinel"
+}
+
+variable "ssh_public_key_path" {
   type        = string
-  description = "Name of an existing aws_key_pair (created once in infra/aws/compute.tf and shared across all three instances)"
+  description = "Path to the SSH public key installed on the instance"
 }
 
 variable "tailscale_authkey" {

@@ -1,6 +1,6 @@
-variable "aws_region" {
+variable "location" {
   type    = string
-  default = "us-east-1"
+  default = "eastus"
 }
 
 variable "ssh_public_key_path" {
@@ -16,30 +16,30 @@ variable "tailscale_authkey" {
 }
 
 # --- Network ---
-variable "vpc_cidr" {
+variable "vnet_cidr" {
   type    = string
-  default = "10.0.0.0/16"
+  default = "10.1.0.0/16"
 }
 
 variable "public_subnet_cidr" {
   type    = string
-  default = "10.0.1.0/24"
+  default = "10.1.1.0/24"
 }
 
-# --- Compute sizing. Approximate AWS equivalents of the OCI root's default sizing
+# --- Compute sizing. Approximate Azure equivalents of the OCI root's default sizing
 # (infra/variables.tf: elastic 4 ocpu/32GB, wazuh/soar 2 ocpu/16GB each) - adjust freely,
 # these aren't required to match exactly. ---
-variable "elastic_instance_type" {
+variable "elastic_vm_size" {
   type    = string
-  default = "r5.xlarge" # 4 vCPU / 32 GiB
+  default = "Standard_E4s_v5" # 4 vCPU / 32 GiB, memory-optimized
 }
 
-variable "wazuh_instance_type" {
+variable "wazuh_vm_size" {
   type    = string
-  default = "t3.xlarge" # 4 vCPU / 16 GiB
+  default = "Standard_D4s_v5" # 4 vCPU / 16 GiB
 }
 
-variable "soar_instance_type" {
+variable "soar_vm_size" {
   type    = string
-  default = "t3.xlarge" # 4 vCPU / 16 GiB
+  default = "Standard_D4s_v5" # 4 vCPU / 16 GiB
 }

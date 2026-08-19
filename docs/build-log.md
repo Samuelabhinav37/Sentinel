@@ -1236,26 +1236,32 @@ turned up live-testing the Linux rules in Phase 22 and 24.
 **Terraform multi-cloud abstraction — a real second provider, not a paper interface.**
 `infra/modules/instance` wraps `oci_core_instance` directly with nothing abstracted out,
 so proving portability meant actually building a second implementation rather than just
-restructuring variable names. Built `infra/aws/` as a fully separate Terraform root
+restructuring variable names. Built `infra/azure/` as a fully separate Terraform root
 (own state, own `init`/`plan`/`apply`) — deliberately not one config that branches
-between providers, since `oci_core_instance` and `aws_instance` are different resource
-types with different schemas, and the live OCI deployment can't be put at risk by this
-work regardless of how it turns out.
+between providers, since `oci_core_instance` and `azurerm_linux_virtual_machine` are
+different resource types with different schemas, and the live OCI deployment can't be
+put at risk by this work regardless of how it turns out. (First built on AWS, then
+swapped to Azure outright per a later request — same design, different provider; AWS
+was never applied against a real account, so nothing live needed migrating.)
 
-`infra/modules/instance-aws` reuses the OCI module's cloud-init template unmodified
+`infra/modules/instance-azure` reuses the OCI module's cloud-init template unmodified
 (`${path.module}/../instance/cloud-init/base.yaml.tftpl`) — cloud-init is
 provider-agnostic, so the actual provisioning logic (Docker, Tailscale) is identical by
-construction, not by keeping two scripts in sync by hand. `infra/aws/network.tf` mirrors
-the OCI security list's exact ingress rules (SSH + Tailscale only). Sizing and SSH-key
-handling had to be reimplemented per-provider since OCI's flexible-shape `ocpus`/
-`memory_gb` and raw-public-key metadata don't have AWS equivalents — see
-`docs/multi-cloud.md` for the full breakdown of what's shared vs. reimplemented, and why.
+construction, not by keeping two scripts in sync by hand. `infra/azure/network.tf`
+mirrors the OCI security list's ingress rules as closely as Azure's NSG model allows
+(SSH + Tailscale only; Azure's ICMP rule can't be scoped to path-MTU-discovery the way
+OCI's can, so it's slightly broader by construction — noted in `docs/multi-cloud.md`).
+Sizing and SSH-key handling had to be reimplemented per-provider since OCI's
+flexible-shape `ocpus`/`memory_gb` don't have Azure equivalents (Azure uses fixed
+`*_vm_size` strings) — though Azure's `admin_ssh_key` block, unlike AWS's `aws_key_pair`
+resource, takes the raw public key directly, same shape as OCI. See `docs/multi-cloud.md`
+for the full breakdown of what's shared vs. reimplemented, and why.
 
-`terraform validate` passes on the AWS root with no AWS credentials present. No AWS CLI
-or credentials exist in this environment, so `terraform plan`/`apply` haven't been
-exercised against a real AWS account — stated plainly rather than assumed working. The
-module is structurally complete and ready for that test whenever real AWS credentials
-are available.
+`terraform validate` passes on the Azure root with no Azure credentials present. No
+Azure CLI session or `ARM_*` credentials exist in this environment, so `terraform
+plan`/`apply` haven't been exercised against a real Azure subscription — stated plainly
+rather than assumed working. The module is structurally complete and ready for that test
+whenever real Azure credentials are available.
 
 ## Current state (end of this session)
 
@@ -1377,11 +1383,11 @@ profile behavior is unchanged by default — lab sizing is always an explicit op
 vars, an extra `-f` compose file, or `LAB_MODE=1`), never a silent change to an existing
 deployment. See `docs/deployment-profiles.md`.
 
-**Multi-cloud**: `infra/aws/` is a complete second implementation of the three-VM
-architecture on AWS, structurally independent of the live OCI deployment (separate root,
+**Multi-cloud**: `infra/azure/` is a complete second implementation of the three-VM
+architecture on Azure, structurally independent of the live OCI deployment (separate root,
 separate state). `terraform validate` passes; `terraform plan`/`apply` haven't been run
-against a real AWS account since no AWS credentials exist in this environment. See
-`docs/multi-cloud.md`.
+against a real Azure subscription since no Azure credentials exist in this environment.
+See `docs/multi-cloud.md`.
 
 **Search backend consolidation**: investigated and deliberately rejected, not deferred —
 Wazuh's indexer and Shuffle's OpenSearch are vendor-coupled application datastores, not
@@ -1392,7 +1398,7 @@ redundant telemetry copies. See Phase 29.
 redeploying it (human-run `terraform apply`), confirming live telemetry, and running a
 live Atomic Red Team pass against it (replacing the current replay/synthetic-only
 evidence for the 5 Windows rules) is the next concrete step. A real `terraform plan`/
-`apply` of the new AWS root against an actual AWS account is the other open item.
+`apply` of the new Azure root against an actual Azure subscription is the other open item.
 
 ## Lessons worth writing about
 
