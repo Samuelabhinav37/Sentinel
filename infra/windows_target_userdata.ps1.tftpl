@@ -102,7 +102,17 @@ Log "Installing Winlogbeat service"
 Push-Location $winlogbeatDir
 & powershell.exe -ExecutionPolicy Bypass -File ".\install-service-winlogbeat.ps1"
 Log "Loading Sysmon module ingest pipeline into Elasticsearch"
+# winlogbeat.exe logs routine info to stderr by design (Go/Beats convention). With
+# $ErrorActionPreference = "Stop" (set globally above), PowerShell promotes that
+# benign stderr output into a terminating NativeCommandError, killing the script
+# before it ever reaches Start-Service below - it isn't an actual pipeline failure.
+# Relax to "Continue" for just this call so stderr is treated as text, not an error,
+# and check the real exit code explicitly afterward instead of relying on $?/throw.
+$ErrorActionPreference = "Continue"
 & ".\winlogbeat.exe" setup --pipelines -e -c ".\winlogbeat.yml" 2>&1 | Out-File -FilePath $log -Append
+$setupExitCode = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+Log "winlogbeat setup --pipelines exit code: $setupExitCode"
 Pop-Location
 
 Log "Starting Winlogbeat service"

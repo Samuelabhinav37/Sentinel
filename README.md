@@ -181,6 +181,23 @@ Shuffle's OpenSearch) was investigated and deliberately rejected — see Phase 2
 of the three are vendor-coupled application datastores, not redundant copies of the same
 telemetry.
 
+## Roadmap
+
+- [ ] **Windows live-fire validation** (in progress) — redeploy the Windows target, run
+      the 5 Atomic Red Team techniques live, replace replay/synthetic evidence in
+      `detections/tests/validation.yml` with measured MTTD.
+- [ ] **Sentinel MCP server** — expose Elastic/Wazuh/Shuffle over MCP so any agent (or
+      new tool below) integrates through one interface instead of one-off connectors.
+- [ ] **Velociraptor + MISP integration** — DFIR/hunting and threat-intel enrichment,
+      wired in through the MCP layer once it exists.
+- [ ] **Dual-AI cross-check triage** — run a second model (e.g. local Ollama) alongside
+      the existing LLM triage stage; only auto-act or fast-escalate on agreement, force
+      human review on disagreement.
+- [ ] **Detection advisor agent** — reviews weak/missed alerts and drafts new Sigma
+      rules for human approval, on top of the MCP layer.
+- [ ] **Presentation pass** — README architecture diagram, an MTTD comparison table,
+      and a short demo video/GIF of one attack → alert → response loop.
+
 ## Tools & References
 
 | Tool / Standard | Link |
