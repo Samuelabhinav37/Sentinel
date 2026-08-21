@@ -153,6 +153,22 @@ feed for indicator lookups, and `velociraptor_list_clients`/`velociraptor_run_hu
 server-only [Velociraptor](https://docs.velociraptor.app/) deployment — stubbed until a client
 is enrolled, since nothing is live-fired against it yet.
 
+## Detection Advisor
+
+[`detections/scripts/detection_advisor.py`](detections/scripts/detection_advisor.py) is a
+human-invoked script — not CI, not scheduled — that reads the same `cross_check_agreement`
+human-review queue the dual-AI triage pipeline writes, over the MCP server (read-only:
+`search_index` only, nothing action-capable). For each flagged alert it asks an LLM whether
+the rule that fired was too broad/narrow for what actually happened, or whether the technique
+looks uncovered by anything in this repo's rule set, and writes any proposal to
+[`detections/drafts/`](detections/drafts/) — never into `detections/rules/`,
+`detections/deployed/`, or `detections/tests/validation.yml`. Nothing it writes is live: a
+draft only becomes a real detection after a human walks it through this project's existing
+validation loop (`sigma check`, live-fire evidence, a negative control, a `validation.yml`
+entry) — see `detections/drafts/README.md`. It doesn't attempt a full MITRE ATT&CK
+coverage-gap sweep (this repo has no bundled technique universe to diff against yet) — it
+surfaces gaps opportunistically from real flagged alerts, not systematically.
+
 Both the triage output and the response outcomes feed the **Sentinel SOC Overview** Kibana
 dashboard: real per-event MTTD trend, alert volume by rule, ATT&CK techniques that have
 actually fired, triage severity distribution, and automated-response outcomes — built via
@@ -194,7 +210,9 @@ Lab sizing is always an explicit opt-in — an env var, an extra `-f` compose fi
 - `detections/tests/validation.yml` — per-rule validation evidence (Mordor replay, synthetic
   event, or live execution) and measured MTTD
 - `detections/scripts/` — Mordor replay, synthetic-event injection, ATT&CK Navigator layer
-  generation, and the CI rule-structure validator
+  generation, the CI rule-structure validator, and the detection advisor
+- `detections/drafts/` — advisor-proposed rules awaiting human review; never live, never
+  swept into CI or `validate_rules.py`
 - `docs/` — build log (every phase of this project, written as it happened, including the
   dead ends), deployment profiles, ATT&CK coverage
 - `scripts/redeploy.sh` — one-command redeploy of the software layer (index templates, all
@@ -206,10 +224,10 @@ All three service stacks (Elastic, Wazuh + Suricata/Zeek, Shuffle + n8n) are dep
 verified live over Tailscale. All 18 Sigma rules are live detection rules with confirmed
 real-world fire evidence. The LLM triage pipeline, automated response, and the SOC dashboard
 are built and running. The Sentinel MCP server, MISP integration, stubbed Velociraptor
-service, and the dual-AI cross-check rework of the push triage pipeline are built and
-`docker compose config`-validated on a feature branch, but **not yet deployed** to either
-live VM or exercised against real traffic (see `docs/build-log.md` Phase 30) — that's the
-next concrete step, before Windows validation resumes. Not yet done: a live Atomic Red Team
+service, the dual-AI cross-check rework of the push triage pipeline, and the detection
+advisor script are built and syntax/config-validated on a feature branch, but **not yet
+deployed or exercised against real traffic** (see `docs/build-log.md` Phases 30-31) —
+that's the next concrete step, before Windows validation resumes. Not yet done: a live Atomic Red Team
 run against a redeployed Windows target (currently torn down — the Windows side is validated
 via replay/synthetic events only; the redeploy path now provisions Sysmon + Winlogbeat, see
 Phase 29) — deliberately parked until the rest of this build is deployed and validated.
@@ -234,8 +252,10 @@ telemetry.
       Claude model independently; auto-action only fires on agreement, disagreement is
       written as a filterable `cross_check_agreement: false` field for human review.
       Not yet re-imported into the live n8n instance.
-- [ ] **Detection advisor agent** — reviews weak/missed alerts and drafts new Sigma
-      rules for human approval, on top of the MCP layer.
+- [x] **Detection advisor agent** — built (`detections/scripts/detection_advisor.py`),
+      reads the `cross_check_agreement` review queue over the MCP layer and drafts
+      proposed rules under `detections/drafts/` for human approval. Not yet run
+      against a live MCP server/Anthropic key.
 - [ ] **Presentation pass** — README architecture diagram, an MTTD comparison table,
       and a short demo video/GIF of one attack → alert → response loop.
 

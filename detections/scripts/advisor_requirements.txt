@@ -1,0 +1,6 @@
+# Only detection_advisor.py needs this -- kept out of detections/requirements.txt
+# so every routine Sigma-rule PR's CI run keeps installing exactly what it does
+# today. httpx2 is mcp's own transitive dependency (its HTTP/Streamable-HTTP
+# backend), not a separately chosen package -- same relationship starlette has to
+# mcp on the server side, see infra/compose/mcp/requirements.txt.
+mcp==2.0.0

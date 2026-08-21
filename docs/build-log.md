@@ -1358,6 +1358,86 @@ live n8n instance or fired against a real alert — those are human-run next ste
 a forced-disagreement case) same as every other live-infrastructure change in this
 project.
 
+## Phase 31 — the detection advisor, and scoping "missed" honestly
+
+Last unstarted roadmap item: **"Detection advisor agent — reviews weak/missed alerts
+and drafts new Sigma rules for human approval, on top of the MCP layer."** Phase 30's
+`cross_check_agreement` field turned "weak alerts" into something concrete and
+already-built to query — a review queue with no automation reading it yet. "Missed
+alerts" had no such foothold: `build_attack_navigator.py` only computes the ATT&CK
+techniques this project's rules *do* cover (a positive list from parsing
+`attack.t####` tags), not a diff against the full MITRE technique universe — there's no
+bundled ATT&CK dataset or `mitreattack-python` dependency anywhere in this repo to
+build a real gap-sweep against. Building one is a genuinely separate, much larger
+project. Scoped honestly instead: the advisor's LLM call, per flagged alert, is asked
+whether the fired rule was too broad/narrow for what actually happened *or* whether the
+technique looks uncovered by anything in this repo's rule set — it can surface a
+suspected gap from a real alert it's looking at, opportunistically, but this is not a
+systematic coverage sweep. Labeled as future work rather than silently narrowed and
+called done.
+
+**`detections/scripts/detection_advisor.py` — a human-invoked script, not a service.**
+Not wired into CI, not scheduled — matches `replay_mordor_dataset.py`/
+`inject_synthetic_events.py`'s existing shape (env vars on the invocation line, no
+`.env`-loading library, since none exists anywhere in this repo). Connects to the
+Sentinel MCP server as a client over Streamable HTTP (`mcp==2.0.0`'s client API, the
+same package version already pinned server-side) rather than a direct Elasticsearch
+connector — the literal "on top of the MCP layer" requirement — and only ever calls
+the read-only `search_index` tool; it never touches `trigger_shuffle_response` or any
+other action-capable tool. It queries `sentinel-triage` for the same
+`cross_check_agreement:false` / high-severity-but-not-low-FP condition Kibana's
+human-review queue already uses, reusing Phase 30's definition rather than inventing a
+second one. Each flagged alert already carries its own raw fields (the triage doc
+embeds `alert: original`, written by `llm-triage-push.json`'s `Build Doc + Auth` node),
+so one `search_index` call is enough — no separate `search_alerts`/`get_triage` round
+trip needed, a simplification from the original plan once it was clear the data was
+already there.
+
+Each alert goes to an LLM (`claude-sonnet-5` by default — a manually-triggered
+reasoning task, not the triage hot path, so it doesn't need to match Ollama/Haiku's
+latency profile) via the same bare-`urllib.request` HTTP pattern already used for the
+Anthropic call in `llm-triage-push.json`, no new LLM SDK dependency. The prompt forces
+JSON output (mirroring the triage prompts' own discipline) and, since its output has
+more direct effect than a severity label, explicitly frames every alert field as
+untrusted data to analyze, never as instructions — CLAUDE.md Section 6 applied to a
+new surface, not just restated. A verdict of `no_action_needed` writes nothing;
+`rule_refinement_suggested`/`new_rule_suggested` writes an `assessment.md` (verdict,
+reasoning, the source alert/triage doc ids for a human to check the work against real
+Kibana data) and, when the LLM's proposal has the required fields, a `draft_rule.yml`
+under a new `detections/drafts/<date>-<slug>/` directory. The script assigns `id`
+(fresh `uuid4`), `status: experimental`, `author`, and `date` itself — an LLM-supplied
+id is never trusted, avoiding hallucinated or colliding ids reaching a draft.
+
+**Why `detections/drafts/` is safe to add without touching CI.** Re-read
+`validate_rules.py` and `.github/workflows/sigma-ci.yml` rather than assuming: both
+glob `detections/rules/*.yml` and `detections/deployed/*.json` by fixed, explicit path
+in every single step (the ATT&CK-tag grep, `sigma check`, both `sigma convert` calls,
+and the pairing/required-fields/validation-coverage checks) — a sibling
+`detections/drafts/` directory is invisible to all of them. CI still *runs* on any push
+touching `detections/**` (the workflow's path trigger is that broad), but nothing in it
+inspects drafts content, so it passes as normal rather than needing a new exclusion
+rule. Confirmed by reading the exact glob patterns, not inferred from the directory
+name alone. `detections/drafts/README.md` spells out the manual promotion path back
+into `detections/rules/` — full `sigma check`, hand-written `deployed/*.json`, live-fire
+evidence, a `validation.yml` entry, then a human-run `validate_rules.py` and
+`redeploy.sh` — the same Definition of Done (CLAUDE.md Section 8) every other rule in
+this project has always had to clear, with no shortcut for AI-drafted ones.
+
+**New dependency, flagged rather than silently added:** `mcp==2.0.0` again, this time
+as an MCP client, in a new `detections/scripts/advisor_requirements.txt` kept separate
+from `detections/requirements.txt` so CI's existing `pip install` step for routine
+Sigma-rule PRs doesn't change. Its own transitive dependency, `httpx2` (the client's
+HTTP/Streamable-HTTP backend — confirmed by reading `mcp`'s actual `pyproject.toml` on
+GitHub rather than trusting a fetched doc page's example verbatim, since an early
+search result named an unfamiliar package plausibly enough to be a hallucination and
+was worth double-checking before writing code against it), isn't separately pinned —
+same relationship `starlette` already has to `mcp` on the server side.
+
+**Verification ceiling, same as Phase 30:** `python3 -m py_compile` passed; no live MCP
+server, Anthropic key, or `sentinel-triage` data with real `cross_check_agreement`
+values exists in this environment to run it end-to-end against, so that's a human-run
+smoke test once the MCP server (still not deployed as of Phase 30) is actually live.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -1503,19 +1583,33 @@ velociraptor/` runs the official server image, config/PKI self-generated on firs
 is enrolled. Built and `docker compose config`-validated on
 `feature/mcp-server-dual-ai-triage`; not yet deployed to either live VM. See Phase 30.
 
+**Detection advisor**: `detections/scripts/detection_advisor.py` — human-invoked,
+reads the `cross_check_agreement` review queue over the MCP server's read-only
+`search_index` tool, asks an LLM (`claude-sonnet-5` default) whether the fired rule
+needs refinement or the technique looks uncovered, and writes any proposal to
+`detections/drafts/` for manual promotion through the existing validate → live-fire →
+`validation.yml` → deploy path. Never touches `detections/rules/`,
+`detections/deployed/`, `validation.yml`, or any action-capable MCP tool. `python3 -m
+py_compile`-verified only; no live MCP server or Anthropic key in this environment to
+run it end-to-end. See Phase 31.
+
 **Not yet done**: Sysmon/Winlogbeat provisioning now exists in
 `windows_target_userdata.ps1.tftpl`, but the Windows target itself is still torn down —
 redeploying it (human-run `terraform apply`), confirming live telemetry, and running a
 live Atomic Red Team pass against it (replacing the current replay/synthetic-only
 evidence for the 5 Windows rules) is the next concrete step, deliberately parked until
-the rest of this session's build (MCP server, MISP/Velociraptor, dual-AI triage) is
-deployed and validated first. A real `terraform plan`/`apply` of the new Azure root
-against an actual Azure subscription is the other open item. Also open from Phase 30:
-deploying `infra/compose/mcp/` and `infra/compose/velociraptor/` to their target VMs,
-supplying real `MISP_URL`/`MISP_API_KEY`/`N8N_ANTHROPIC_API_KEY`/Velociraptor admin
-password values, an MCP-server smoke test over real HTTP, and re-importing +
-live-testing the reworked `llm-triage-push.json` (including a forced-disagreement case
-to confirm the Cross-Check Gate correctly withholds automated response).
+the rest of this session's build (MCP server, MISP/Velociraptor, dual-AI triage,
+detection advisor) is deployed and validated first. A real `terraform plan`/`apply` of
+the new Azure root against an actual Azure subscription is the other open item. Also
+open from Phases 30-31: deploying `infra/compose/mcp/` and `infra/compose/velociraptor/`
+to their target VMs, supplying real `MISP_URL`/`MISP_API_KEY`/`N8N_ANTHROPIC_API_KEY`/
+Velociraptor admin password/`ANTHROPIC_API_KEY` values, an MCP-server smoke test over
+real HTTP, re-importing + live-testing the reworked `llm-triage-push.json` (including a
+forced-disagreement case to confirm the Cross-Check Gate correctly withholds automated
+response), and a real run of `detection_advisor.py` against live review-queue data. A
+systematic ATT&CK coverage-gap sweep (as opposed to the advisor's opportunistic,
+per-alert gap surfacing) remains unbuilt — no bundled technique universe exists yet to
+diff against.
 
 ## Lessons worth writing about
 
