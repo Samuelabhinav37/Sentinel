@@ -13,7 +13,14 @@
             "severity": { "type": "keyword" },
             "false_positive_likelihood": { "type": "keyword" }
           }
-        }
+        },
+        "triage_secondary": {
+          "properties": {
+            "severity": { "type": "keyword" },
+            "false_positive_likelihood": { "type": "keyword" }
+          }
+        },
+        "cross_check_agreement": { "type": "boolean" }
       }
     }
   }

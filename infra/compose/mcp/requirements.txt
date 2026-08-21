@@ -1,0 +1,7 @@
+# New top-level dependencies for this service (see CLAUDE.md Section 7 --
+# named/approved in docs/build-log.md and the MCP-server plan). starlette
+# comes in as mcp's own transitive requirement for the streamable-http
+# transport; uvicorn is pinned explicitly since mcp_server.py imports and
+# runs it directly rather than relying on mcp's optional [cli] extra.
+mcp==2.0.0
+uvicorn==0.52.4

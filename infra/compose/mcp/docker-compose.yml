@@ -1,0 +1,22 @@
+name: sentinel-mcp
+
+services:
+  mcp:
+    build: .
+    container_name: sentinel-mcp
+    restart: unless-stopped
+    # Tailscale-only reachability, same as responder.yml's 8088 -- no OCI
+    # security-list entry needed, and no port publish is required either
+    # since network_mode: host binds directly to the VM's interfaces
+    # (including its Tailscale one).
+    network_mode: host
+    environment:
+      - MCP_TOKEN=${MCP_TOKEN}
+      - ELASTIC_URL=${ELASTIC_URL}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - WAZUH_API_URL=${WAZUH_API_URL}
+      - WAZUH_API_USER=${WAZUH_API_USER}
+      - WAZUH_API_PASSWORD=${WAZUH_API_PASSWORD}
+      - SHUFFLE_WEBHOOK_URL=${SHUFFLE_WEBHOOK_URL}
+      - MISP_URL=${MISP_URL:-}
+      - MISP_API_KEY=${MISP_API_KEY:-}

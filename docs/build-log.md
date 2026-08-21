@@ -1263,6 +1263,101 @@ plan`/`apply` haven't been exercised against a real Azure subscription — state
 rather than assumed working. The module is structurally complete and ready for that test
 whenever real Azure credentials are available.
 
+## Phase 30 — MCP server, MISP + Velociraptor (stubbed), and dual-AI cross-check triage
+
+Three more roadmap items picked up together since they layer on each other: an MCP
+server exposing the existing stack to any agent, threat-intel/DFIR tools added to that
+same server, and a second independent model added to the triage pipeline.
+
+**Sentinel MCP server (`infra/compose/mcp/`) — the repo's first Dockerfile.** Every
+other service here mounts a stock upstream image; this one needs the `mcp` PyPI package
+installed, so it's the first service built from a `python:3.12-slim` base rather than
+run as-is. `mcp` had just gone through a breaking v2.0.0 rework close to this session's
+knowledge cutoff (`FastMCP` renamed to `MCPServer`, module path changed), so the exact
+import (`from mcp.server import MCPServer`) and HTTP-serving shape
+(`mcp.streamable_http_app()` run under `uvicorn`) were confirmed against current docs
+before writing any code rather than guessed from a possibly-stale training memory.
+
+Deployed conceptually alongside n8n/Ollama/Shuffle on `sentinel-soar` (measured the most
+idle headroom of the three VMs in Phase 28), `network_mode: host`, port `8090`,
+Tailscale-only reachability — no `network.tf` change, matching every other dashboard in
+this project. Auth is a shared-secret header (`X-MCP-Token`), the same pattern
+`sentinel-responder` already uses for `X-Responder-Token`.
+
+Tools are thin wrappers over calls this project already makes somewhere else, not new
+capability: `search_alerts`, `get_triage`, `search_index` (allowlisted to five known
+index patterns, not a raw passthrough to the cluster), `get_response_actions`,
+`trigger_shuffle_response` (same webhook n8n's response gate already calls), and
+`list_wazuh_agents`/`get_wazuh_agent_status`. That last pair deliberately calls the
+**Wazuh manager's own REST API** (port 55000, JWT auth), not Wazuh's indexer — Phase 29
+already established the indexer as a vendor-coupled internal datastore the dashboard
+alone should query; giving MCP clients the same boundary the dashboard itself uses,
+rather than reopening that decision, keeps Wazuh capability consistent with it instead
+of quietly working around it.
+
+**MISP and Velociraptor, added to the same server.** `misp_search_ioc` calls a hosted
+MISP instance's `/attributes/restSearch` over stdlib `urllib.request` — no `pymisp`
+dependency, matching the minimal-deps instinct already used everywhere else in this
+project's Python (`sentinel-responder` included). It reports `not_configured` rather
+than erroring when `MISP_URL`/`MISP_API_KEY` are unset, since no MISP instance is wired
+up yet.
+
+Velociraptor got its own compose stack (`infra/compose/velociraptor/`), placed on
+`sentinel-wazuh` (spreads load off soar, and sits conceptually next to Wazuh's DFIR
+role) rather than folded into the MCP server. The plan going in assumed a manual
+`velociraptor config generate` bootstrap step; reading the actual official Docker
+deployment docs showed the `ghcr.io/velocidex/velociraptor-server` image generates its
+own config and PKI on first boot from `VELOCIRAPTOR_*` env vars, so that manual step
+turned out to be unnecessary — simpler than planned, not a scope change. No client is
+enrolled (ties back to the still-parked Windows target), so `velociraptor_list_clients`
+and `velociraptor_run_hunt` are honest stubs: both unconditionally return
+`not_configured` rather than shipping untested gRPC/mTLS code against an API with
+nothing behind it to test it against yet.
+
+**Dual-AI cross-check triage — a genuinely independent second model, not just "add
+Ollama."** The roadmap item as originally written said "run a second model (e.g. local
+Ollama)" — but Ollama is already what both triage pipelines call today, so that phrasing
+wouldn't have produced a cross-check at all. Confirmed with a real second, hosted model
+(Claude, `claude-haiku-4-5-20251001` via the Messages API) before designing anything.
+
+Scoped to `llm-triage-push.json` only — the poll pipeline just populates
+`sentinel-triage` with no auto-action gate to cross-check. `Build Prompt` now fans out to
+both `Call Ollama` and a new `Call Claude` HTTP Request node with the identical prompt,
+each parsed separately (`Parse Ollama Triage` / `Parse Claude Triage`), recombined by a
+`Merge Triage` node (`combineByPosition`), and written into one document that now carries
+both verdicts: `triage` (Ollama, unchanged field name for continuity with the poll
+pipeline) and a new `triage_secondary` (Claude). The old `Check Response Gate` became
+`Cross-Check Gate`, and now requires *both* models to independently rate an alert
+high/critical severity with low false-positive likelihood before anything reaches
+Shuffle — agreement is the auto-action bar, not either model alone. A new
+`cross_check_agreement` boolean (true whenever both models reach the same
+auto-action-worthy verdict, whether both flag it or both don't; false only on genuine
+disagreement) is written alongside, so disagreement is filterable in Kibana as a
+human-review queue rather than needing a new notification channel. `sentinel-triage`'s
+index template got explicit mappings for both new fields (mirroring `triage`'s existing
+`severity`/`false_positive_likelihood` keyword sub-fields, plus `cross_check_agreement`
+as `boolean`) — the template has no strict dynamic mapping so the fields wouldn't have
+been rejected either way, but explicit typing is what makes Kibana filtering on them
+reliable rather than incidental. New secret: `N8N_ANTHROPIC_API_KEY`.
+
+Deliberately *not* routed through the new MCP server — n8n already reaches Shuffle
+directly today, and routing an internal workflow call through the new external-facing
+MCP layer would be circular complexity with no functional gain. MCP is for external
+agents reaching into this stack, not for replacing a call that already works.
+
+**Feature-branched, not yet deployed or live-tested.** All of the above (`infra/compose/
+mcp/`, `infra/compose/velociraptor/`, the rewritten `llm-triage-push.json`, the index
+template change) was built on `feature/mcp-server-dual-ai-triage`, off `main`, per this
+project's own branch-discipline rule — everything up to this point in the build log had
+been committed straight to `main`; this is the first piece of work large enough to
+warrant a feature branch. `docker compose config` passed locally against both new
+compose files; nothing has been deployed to either live VM yet, no MCP tool has been hit
+over real HTTP, and the modified `llm-triage-push.json` hasn't been re-imported into the
+live n8n instance or fired against a real alert — those are human-run next steps
+(`.env` values, `docker compose up`, an n8n re-import, a live test-alert pass including
+a forced-disagreement case) same as every other live-infrastructure change in this
+project.
+
 ## Current state (end of this session)
 
 **Live infrastructure** (all reachable only via Tailscale, matching the original manual
@@ -1289,16 +1384,20 @@ connector type. Reverts to Basic automatically on expiry — nothing in this pro
 requires the trial to keep working, since the original poll-based pipeline still runs
 unmodified alongside the new push one.
 
-**LLM triage pipeline — now two, running in parallel**: the original n8n Schedule Trigger
-polling `.alerts-security.alerts-default*` every 5 minutes (still the license-agnostic
-baseline), plus a new push pipeline where a Kibana rule action calls an n8n webhook the
-instant each alert fires (`infra/compose/soar/n8n/workflows/llm-triage-push.json`, see
-Phase 23). Both call the same self-hosted Ollama model and write to the same
-`sentinel-triage` index using distinct document ids, so results from both are inspectable
-side by side. Measured push latency (alert fired to triage written): **67 seconds**,
-almost entirely Ollama inference — versus the polling pipeline's fixed 5-minute schedule,
-which can add several more minutes of pure signaling delay on top of that same inference
-time depending on where in the cycle an alert lands.
+**LLM triage pipeline — two pipelines, and the push one is now dual-AI**: the original
+n8n Schedule Trigger polling `.alerts-security.alerts-default*` every 5 minutes (still
+the license-agnostic baseline, single-model, unchanged since Phase 23), plus the push
+pipeline where a Kibana rule action calls an n8n webhook the instant each alert fires
+(`infra/compose/soar/n8n/workflows/llm-triage-push.json`). Both still call the same
+self-hosted Ollama model and write to the same `sentinel-triage` index using distinct
+document ids, so poll and push results are inspectable side by side — but as of Phase 30
+the push pipeline also calls a second, independent hosted model (Claude) with the
+identical prompt, and only fires the Shuffle response gate when both models agree the
+alert is high/critical severity with low false-positive likelihood. Measured push
+latency (alert fired to triage written) was **67 seconds** before the dual-model change
+(almost entirely Ollama inference, see Phase 23); not yet re-measured with the added
+Claude call, since the reworked workflow hasn't been re-deployed to the live n8n instance
+yet (Phase 30).
 
 **Detection-as-code**: 18 Sigma rules (5 Windows, 13 Linux), all deployed live as
 scheduled Kibana detection rules, all with a push action and `host.name`-grouped alert
@@ -1393,12 +1492,30 @@ See `docs/multi-cloud.md`.
 Wazuh's indexer and Shuffle's OpenSearch are vendor-coupled application datastores, not
 redundant telemetry copies. See Phase 29.
 
+**MCP server + MISP + Velociraptor (stubbed)**: `infra/compose/mcp/` — the repo's first
+Dockerfile — exposes `search_alerts`, `get_triage`, `search_index` (allowlisted
+patterns), `get_response_actions`, `trigger_shuffle_response`, `list_wazuh_agents`/
+`get_wazuh_agent_status` (Wazuh manager API, not the indexer, consistent with Phase 29),
+and `misp_search_ioc` (reports `not_configured` until a real MISP URL/key is supplied)
+over MCP's Streamable HTTP transport, shared-secret-header auth. `infra/compose/
+velociraptor/` runs the official server image, config/PKI self-generated on first boot;
+`velociraptor_list_clients`/`velociraptor_run_hunt` are deliberate stubs until a client
+is enrolled. Built and `docker compose config`-validated on
+`feature/mcp-server-dual-ai-triage`; not yet deployed to either live VM. See Phase 30.
+
 **Not yet done**: Sysmon/Winlogbeat provisioning now exists in
 `windows_target_userdata.ps1.tftpl`, but the Windows target itself is still torn down —
 redeploying it (human-run `terraform apply`), confirming live telemetry, and running a
 live Atomic Red Team pass against it (replacing the current replay/synthetic-only
-evidence for the 5 Windows rules) is the next concrete step. A real `terraform plan`/
-`apply` of the new Azure root against an actual Azure subscription is the other open item.
+evidence for the 5 Windows rules) is the next concrete step, deliberately parked until
+the rest of this session's build (MCP server, MISP/Velociraptor, dual-AI triage) is
+deployed and validated first. A real `terraform plan`/`apply` of the new Azure root
+against an actual Azure subscription is the other open item. Also open from Phase 30:
+deploying `infra/compose/mcp/` and `infra/compose/velociraptor/` to their target VMs,
+supplying real `MISP_URL`/`MISP_API_KEY`/`N8N_ANTHROPIC_API_KEY`/Velociraptor admin
+password values, an MCP-server smoke test over real HTTP, and re-importing +
+live-testing the reworked `llm-triage-push.json` (including a forced-disagreement case
+to confirm the Cross-Check Gate correctly withholds automated response).
 
 ## Lessons worth writing about
 

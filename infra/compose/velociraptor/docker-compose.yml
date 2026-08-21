@@ -1,0 +1,23 @@
+name: sentinel-velociraptor
+
+# Server-only deployment -- no client enrolled yet (see docs/build-log.md).
+# Official image/env-var names per https://docs.velociraptor.app/docs/deployment/server/docker/
+services:
+  velociraptor:
+    image: ghcr.io/velocidex/velociraptor-server:latest
+    container_name: sentinel-velociraptor
+    restart: unless-stopped
+    # Tailscale-only reachability, same pattern as every other dashboard in
+    # this project (Kibana, Wazuh dashboard) and infra/compose/mcp -- no OCI
+    # security-list entry needed.
+    network_mode: host
+    environment:
+      - VELOCIRAPTOR_HOSTNAME=${VELOCIRAPTOR_HOSTNAME}
+      - VELOCIRAPTOR_FRONTEND_PORT=${VELOCIRAPTOR_FRONTEND_PORT:-8000}
+      - VELOCIRAPTOR_GUI_PORT=${VELOCIRAPTOR_GUI_PORT:-8889}
+      - VELOCIRAPTOR_DATASTORE_PATH=/datastore/
+      - VELOCIRAPTOR_CONFIG_PATH=/etc/velociraptor/server.config.yaml
+      - VELOCIRAPTOR_INITIAL_ADMIN_PASSWORD=${VELOCIRAPTOR_INITIAL_ADMIN_PASSWORD}
+    volumes:
+      - ./etc:/etc/velociraptor
+      - ./datastore:/datastore

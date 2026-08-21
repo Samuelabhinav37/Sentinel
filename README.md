@@ -26,16 +26,22 @@ flowchart LR
     Sigma[Sigma rules\nversion-controlled, CI-validated] -->|deployed as detection rules| ES
     ES -->|rule fires| Rule[Kibana detection rule\n+ alert suppression]
 
-    Rule -->|push webhook, ~67s| n8n[n8n\nLLM triage via Ollama]
+    Rule -->|push webhook, ~67s| n8n[n8n\ndual-AI triage: Ollama + Claude]
     Rule -.->|poll fallback, 5 min| n8n
-    n8n -->|high/critical severity,\nlow false-positive likelihood| Shuffle[Shuffle SOAR]
+    n8n -->|BOTH models agree:\nhigh/critical, low FP| Shuffle[Shuffle SOAR]
     Shuffle -->|kill flagged process| Host
 
-    n8n --> TriageIdx[(sentinel-triage)]
+    n8n --> TriageIdx[(sentinel-triage\n+ cross_check_agreement)]
     Shuffle --> RespIdx[(sentinel-response-actions)]
     TriageIdx --> Dash[Sentinel SOC Overview\nKibana dashboard]
     RespIdx --> Dash
     ES --> Dash
+
+    MCP[Sentinel MCP server] -->|search / triage / respond| ES
+    MCP --> Wazuh
+    MCP -->|trigger| Shuffle
+    MCP -.->|stubbed| Velo[(Velociraptor\nserver-only)]
+    MCP -.->|IOC lookup| MISP[(MISP\nhosted feed)]
 
     CI[GitHub Actions] -->|on every rule change| Validate[sigma check +\nvalidate_rules.py]
 
@@ -44,12 +50,18 @@ flowchart LR
         Wazuh
         Shuffle
         n8n
+        MCP
+        Velo
     end
 ```
 
 Three OCI VMs, one Terraform config, deployed and reachable only over
-[Tailscale](https://tailscale.com/): Elasticsearch + Kibana; Wazuh manager + Suricata/Zeek;
-Shuffle SOAR + n8n.
+[Tailscale](https://tailscale.com/): Elasticsearch + Kibana; Wazuh manager + Suricata/Zeek
++ Velociraptor (server-only, no client enrolled yet); Shuffle SOAR + n8n + Ollama + the
+Sentinel MCP server. MCP exposes the stack's core capabilities (alert search, triage
+lookup, Wazuh agent status, triggering the response gate, MISP IOC lookup, and stubbed
+Velociraptor hunting) over one interface for any MCP-speaking agent, instead of one-off
+connectors per tool.
 
 ## Detection Coverage
 
@@ -107,20 +119,39 @@ Every rule also carries Kibana alert suppression grouped by `host.name`, collaps
 
 ## LLM Triage & Automated Response
 
-Two triage pipelines run in parallel against the same self-hosted [Ollama](https://ollama.com/)
-model (`llama3.2:3b`), writing to the same index for side-by-side comparison:
+Two triage pipelines write to the same `sentinel-triage` index for side-by-side comparison:
 
-- **Push** — a Kibana rule action calls an n8n webhook the instant an alert fires. Measured
-  latency (alert fired → triage written): **67 seconds**, almost entirely LLM inference time.
+- **Push** — a Kibana rule action calls an n8n webhook the instant an alert fires. Runs the
+  alert through **two independent models in parallel**: the self-hosted [Ollama](https://ollama.com/)
+  model (`llama3.2:3b`) and a hosted [Claude](https://www.anthropic.com/) model
+  (`claude-haiku-4-5`), each answering the identical prompt. Measured latency (alert fired →
+  triage written) was **67 seconds** with the single-model version, almost entirely LLM
+  inference time; not yet re-measured with the second model call added.
 - **Poll** — the original, license-agnostic baseline: an n8n Schedule Trigger sweeping the
-  alerts index every 5 minutes, kept running as a fallback that doesn't depend on Elastic's
-  paid-tier webhook connector.
+  alerts index every 5 minutes, single-model (Ollama only), kept running as a fallback that
+  doesn't depend on Elastic's paid-tier webhook connector.
 
-When the LLM rates an alert **high/critical severity with low false-positive likelihood**,
-n8n calls a Shuffle SOAR workflow that kills the flagged process on the host — bounded to
-exactly that one action, and hard-refusing to touch protected system processes regardless of
-what it's told. Every response action is logged to `sentinel-response-actions` for the same
-auditability as the detection pipeline.
+The push pipeline only auto-acts on **agreement**: n8n calls a Shuffle SOAR workflow that
+kills the flagged process only when **both** models independently rate the alert
+high/critical severity with low false-positive likelihood — one model alone is never enough
+to trigger a response. Every alert also gets a `cross_check_agreement` field, so the cases
+where the two models *disagree* are filterable in Kibana as a human-review queue, instead of
+silently defaulting to whichever model happened to write last. The response itself is bounded
+to exactly one action (killing the flagged process) and hard-refuses to touch protected system
+processes regardless of what it's told. Every response action is logged to
+`sentinel-response-actions` for the same auditability as the detection pipeline.
+
+## MCP, MISP & Velociraptor
+
+The [Sentinel MCP server](infra/compose/mcp/) exposes the stack's core capabilities — alert
+search, triage lookup, Wazuh agent status (via the Wazuh manager's own API, not its internal
+indexer — kept a deliberate vendor boundary rather than reaching into a coupled datastore),
+and triggering the same Shuffle response gate the triage pipeline uses — over one MCP
+interface, so any MCP-speaking agent integrates without a one-off connector. It also carries
+threat-intel and DFIR tooling: `misp_search_ioc` against a hosted [MISP](https://www.misp-project.org/)
+feed for indicator lookups, and `velociraptor_list_clients`/`velociraptor_run_hunt` against a
+server-only [Velociraptor](https://docs.velociraptor.app/) deployment — stubbed until a client
+is enrolled, since nothing is live-fired against it yet.
 
 Both the triage output and the response outcomes feed the **Sentinel SOC Overview** Kibana
 dashboard: real per-event MTTD trend, alert volume by rule, ATT&CK techniques that have
@@ -156,8 +187,9 @@ Lab sizing is always an explicit opt-in — an env var, an extra `-f` compose fi
 ## Repo Layout
 
 - `infra/` — Terraform for OCI (VCN, security lists, compute), plus `compose/` (per-VM Docker
-  Compose stacks: `elastic/`, `wazuh/`, `soar/n8n/`, `soar/shuffle/`), `elasticsearch/` and
-  `kibana/` (index templates and the dashboard, as importable IaC)
+  Compose stacks: `elastic/`, `wazuh/`, `soar/n8n/`, `soar/shuffle/`, `mcp/` (Sentinel MCP
+  server), `velociraptor/`), `elasticsearch/` and `kibana/` (index templates and the
+  dashboard, as importable IaC)
 - `detections/rules/` — Sigma rules, one per file, each tagged with an ATT&CK technique ID
 - `detections/tests/validation.yml` — per-rule validation evidence (Mordor replay, synthetic
   event, or live execution) and measured MTTD
@@ -173,9 +205,14 @@ Lab sizing is always an explicit opt-in — an env var, an extra `-f` compose fi
 All three service stacks (Elastic, Wazuh + Suricata/Zeek, Shuffle + n8n) are deployed and
 verified live over Tailscale. All 18 Sigma rules are live detection rules with confirmed
 real-world fire evidence. The LLM triage pipeline, automated response, and the SOC dashboard
-are built and running. Not yet done: a live Atomic Red Team run against a redeployed Windows
-target (currently torn down — the Windows side is validated via replay/synthetic events only;
-the redeploy path now provisions Sysmon + Winlogbeat, see `docs/build-log.md` Phase 29).
+are built and running. The Sentinel MCP server, MISP integration, stubbed Velociraptor
+service, and the dual-AI cross-check rework of the push triage pipeline are built and
+`docker compose config`-validated on a feature branch, but **not yet deployed** to either
+live VM or exercised against real traffic (see `docs/build-log.md` Phase 30) — that's the
+next concrete step, before Windows validation resumes. Not yet done: a live Atomic Red Team
+run against a redeployed Windows target (currently torn down — the Windows side is validated
+via replay/synthetic events only; the redeploy path now provisions Sysmon + Winlogbeat, see
+Phase 29) — deliberately parked until the rest of this build is deployed and validated.
 Consolidating the project's three separate search backends (Elasticsearch, Wazuh's indexer,
 Shuffle's OpenSearch) was investigated and deliberately rejected — see Phase 29 — since two
 of the three are vendor-coupled application datastores, not redundant copies of the same
@@ -183,16 +220,20 @@ telemetry.
 
 ## Roadmap
 
-- [ ] **Windows live-fire validation** (in progress) — redeploy the Windows target, run
-      the 5 Atomic Red Team techniques live, replace replay/synthetic evidence in
+- [ ] **Windows live-fire validation** (parked) — deliberately deferred until the rest
+      of this roadmap batch is deployed and validated; then redeploy the Windows target,
+      run the 5 Atomic Red Team techniques live, replace replay/synthetic evidence in
       `detections/tests/validation.yml` with measured MTTD.
-- [ ] **Sentinel MCP server** — expose Elastic/Wazuh/Shuffle over MCP so any agent (or
-      new tool below) integrates through one interface instead of one-off connectors.
-- [ ] **Velociraptor + MISP integration** — DFIR/hunting and threat-intel enrichment,
-      wired in through the MCP layer once it exists.
-- [ ] **Dual-AI cross-check triage** — run a second model (e.g. local Ollama) alongside
-      the existing LLM triage stage; only auto-act or fast-escalate on agreement, force
-      human review on disagreement.
+- [x] **Sentinel MCP server** — built (`infra/compose/mcp/`), exposing Elastic/Wazuh/
+      Shuffle so any agent integrates through one interface instead of one-off
+      connectors. Not yet deployed to a live VM.
+- [x] **Velociraptor + MISP integration** — built, wired through the MCP layer. MISP
+      hosted-feed lookup is live once real credentials are supplied; Velociraptor is
+      server-only with its MCP tools stubbed until a client is enrolled.
+- [x] **Dual-AI cross-check triage** — the push pipeline now calls Ollama and a hosted
+      Claude model independently; auto-action only fires on agreement, disagreement is
+      written as a filterable `cross_check_agreement: false` field for human review.
+      Not yet re-imported into the live n8n instance.
 - [ ] **Detection advisor agent** — reviews weak/missed alerts and drafts new Sigma
       rules for human approval, on top of the MCP layer.
 - [ ] **Presentation pass** — README architecture diagram, an MTTD comparison table,
@@ -210,6 +251,10 @@ telemetry.
 | Shuffle SOAR | https://shuffler.io/ |
 | n8n | https://n8n.io/ |
 | Ollama | https://ollama.com/ |
+| Anthropic Claude | https://www.anthropic.com/ |
+| Model Context Protocol (MCP) | https://modelcontextprotocol.io/ |
+| MISP | https://www.misp-project.org/ |
+| Velociraptor | https://docs.velociraptor.app/ |
 | Atomic Red Team | https://github.com/redcanaryco/atomic-red-team |
 | OTRF Mordor / Security Datasets | https://github.com/OTRF/detection-container |
 | MITRE ATT&CK | https://attack.mitre.org/ |
