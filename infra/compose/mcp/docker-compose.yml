@@ -10,6 +10,13 @@ services:
     # since network_mode: host binds directly to the VM's interfaces
     # (including its Tailscale one).
     network_mode: host
+    # get_detection_coverage reads docs/attack_coverage.json fresh on every
+    # call -- bind-mounted from this VM's own repo checkout (assumes the
+    # same checkout the rest of infra/compose is deployed from), read-only,
+    # so it goes stale only as far as this VM's last `git pull`, not until
+    # an image rebuild.
+    volumes:
+      - ../../../docs:/app/docs:ro
     environment:
       - MCP_TOKEN=${MCP_TOKEN}
       - ELASTIC_URL=${ELASTIC_URL}

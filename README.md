@@ -144,23 +144,31 @@ processes regardless of what it's told. Every response action is logged to
 ## MCP, MISP & Velociraptor
 
 The [Sentinel MCP server](infra/compose/mcp/) exposes the stack's core capabilities — alert
-search, triage lookup, Wazuh agent status (via the Wazuh manager's own API, not its internal
-indexer — kept a deliberate vendor boundary rather than reaching into a coupled datastore),
-and triggering the same Shuffle response gate the triage pipeline uses — over one MCP
-interface, so any MCP-speaking agent integrates without a one-off connector. It also carries
-threat-intel and DFIR tooling: `misp_search_ioc` against a hosted [MISP](https://www.misp-project.org/)
-feed for indicator lookups, and `velociraptor_list_clients`/`velociraptor_run_hunt` against a
-server-only [Velociraptor](https://docs.velociraptor.app/) deployment — stubbed until a client
-is enrolled, since nothing is live-fired against it yet.
+search, triage lookup, a composite `get_alert_context` (raw alert + both triage verdicts +
+response actions in one call), Wazuh agent status/vulnerabilities/SCA results (via the Wazuh
+manager's own API, not its internal indexer — kept a deliberate vendor boundary rather than
+reaching into a coupled datastore), this repo's own ATT&CK coverage layer
+(`get_detection_coverage`), and triggering the same Shuffle response gate the triage pipeline
+uses — over one MCP interface, so any MCP-speaking agent integrates without a one-off
+connector. Every tool carries an MCP [tool annotation](https://modelcontextprotocol.io/)
+(read-only vs. destructive vs. open-world) so a client's permission UI can tell "safe to
+auto-approve" apart from "has real effect" without parsing docstrings — `trigger_shuffle_response`
+is the only one marked destructive. It also carries threat-intel and DFIR tooling:
+`misp_search_ioc`/`misp_get_event` against a hosted [MISP](https://www.misp-project.org/) feed
+for indicator and full-event lookups, and `velociraptor_list_clients`/`velociraptor_run_hunt`
+against a server-only [Velociraptor](https://docs.velociraptor.app/) deployment — stubbed until
+a client is enrolled, since nothing is live-fired against it yet.
 
 ## Detection Advisor
 
 [`detections/scripts/detection_advisor.py`](detections/scripts/detection_advisor.py) is a
 human-invoked script — not CI, not scheduled — that reads the same `cross_check_agreement`
 human-review queue the dual-AI triage pipeline writes, over the MCP server (read-only:
-`search_index` only, nothing action-capable). For each flagged alert it asks an LLM whether
-the rule that fired was too broad/narrow for what actually happened, or whether the technique
-looks uncovered by anything in this repo's rule set, and writes any proposal to
+`search_index` and `get_detection_coverage`, nothing action-capable). For each flagged alert
+it asks an LLM whether the rule that fired was too broad/narrow for what actually happened, or
+whether the technique looks uncovered by anything in this repo's rule set — telling it up
+front which techniques already have a rule (via `get_detection_coverage`) so it doesn't
+propose a "new" rule for something already covered — and writes any proposal to
 [`detections/drafts/`](detections/drafts/) — never into `detections/rules/`,
 `detections/deployed/`, or `detections/tests/validation.yml`. Nothing it writes is live: a
 draft only becomes a real detection after a human walks it through this project's existing
@@ -223,11 +231,12 @@ Lab sizing is always an explicit opt-in — an env var, an extra `-f` compose fi
 All three service stacks (Elastic, Wazuh + Suricata/Zeek, Shuffle + n8n) are deployed and
 verified live over Tailscale. All 18 Sigma rules are live detection rules with confirmed
 real-world fire evidence. The LLM triage pipeline, automated response, and the SOC dashboard
-are built and running. The Sentinel MCP server, MISP integration, stubbed Velociraptor
-service, the dual-AI cross-check rework of the push triage pipeline, and the detection
-advisor script are built and syntax/config-validated on a feature branch, but **not yet
-deployed or exercised against real traffic** (see `docs/build-log.md` Phases 30-31) —
-that's the next concrete step, before Windows validation resumes. Not yet done: a live Atomic Red Team
+are built and running. The Sentinel MCP server (15 tools across Elastic/Wazuh/Shuffle/MISP/Velociraptor, annotated
+and including a composite alert-context tool and this repo's own ATT&CK coverage), MISP
+integration, stubbed Velociraptor service, the dual-AI cross-check rework of the push triage
+pipeline, and the detection advisor script are built and syntax/config-validated on a feature
+branch, but **not yet deployed or exercised against real traffic** (see `docs/build-log.md`
+Phases 30-32) — that's the next concrete step, before Windows validation resumes. Not yet done: a live Atomic Red Team
 run against a redeployed Windows target (currently torn down — the Windows side is validated
 via replay/synthetic events only; the redeploy path now provisions Sysmon + Winlogbeat, see
 Phase 29) — deliberately parked until the rest of this build is deployed and validated.

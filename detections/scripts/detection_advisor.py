@@ -10,8 +10,8 @@ detections/tests/validation.yml, and never runs sigma check or a deploy.
 Reads the review queue through the Sentinel MCP server (infra/compose/mcp/),
 not a direct Elasticsearch connection -- this is the "on top of the MCP
 layer" piece of the roadmap's detection-advisor item. Only calls MCP's
-search_index tool (read-only); never trigger_shuffle_response or anything
-else action-capable.
+read-only search_index and get_detection_coverage tools; never
+trigger_shuffle_response or anything else action-capable.
 
 Usage:
     MCP_URL=http://<soar-vm-tailscale-ip>:8090 \\
@@ -61,15 +61,14 @@ def _env(name: str) -> str:
         raise SystemExit(f"missing required env var {name}")
 
 
-def _review_queue_query(lookback_hours: int) -> str:
-    since = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).strftime(
-        "%Y-%m-%dT%H:%M:%S"
-    )
-    return (
-        f"@timestamp:[{since} TO *] AND "
-        f"(cross_check_agreement:false OR "
-        f"(triage.severity:(high OR critical) AND NOT triage.false_positive_likelihood:low))"
-    )
+REVIEW_QUEUE_QUERY = (
+    "cross_check_agreement:false OR "
+    "(triage.severity:(high OR critical) AND NOT triage.false_positive_likelihood:low)"
+)
+
+
+def _lookback_start(lookback_hours: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 async def _mcp_call(mcp_url: str, mcp_token: str, tool_name: str, arguments: dict) -> dict:
@@ -95,19 +94,37 @@ async def _mcp_call(mcp_url: str, mcp_token: str, tool_name: str, arguments: dic
 async def find_review_queue(mcp_url: str, mcp_token: str, lookback_hours: int, max_alerts: int) -> list[dict]:
     result = await _mcp_call(mcp_url, mcp_token, "search_index", {
         "index_pattern": "sentinel-triage",
-        "query": _review_queue_query(lookback_hours),
+        "query": REVIEW_QUEUE_QUERY,
+        "from_time": _lookback_start(lookback_hours),
         "size": max_alerts,
     })
     hits = result.get("hits", {}).get("hits", [])
     return [{"_id": h["_id"], **h.get("_source", {})} for h in hits]
 
 
-def _build_prompt(triage_doc: dict) -> str:
+async def fetch_coverage(mcp_url: str, mcp_token: str) -> set[str]:
+    """Technique ids this repo already has a Sigma rule for, per
+    get_detection_coverage -- so the drafting prompt doesn't propose
+    new_rule_suggested for something already covered."""
+    result = await _mcp_call(mcp_url, mcp_token, "get_detection_coverage", {})
+    if "error" in result:
+        print(f"  (coverage lookup unavailable: {result['error']} -- proceeding without it)")
+        return set()
+    layer = result.get("layer", {})
+    return {t["techniqueID"] for t in layer.get("techniques", []) if t.get("score")}
+
+
+def _build_prompt(triage_doc: dict, covered_techniques: set[str]) -> str:
     # Mirrors the framing/forced-JSON-schema style already used in
     # llm-triage-push.json's "Build Prompt" node, extended with an explicit
     # untrusted-data warning since this call's output (a Sigma rule) has more
     # direct effect than a severity label.
     raw = json.dumps(triage_doc, default=str)[:4000]
+    coverage_line = (
+        f"Techniques this repo already has a Sigma rule for: {', '.join(sorted(covered_techniques))}."
+        if covered_techniques else
+        "No detection-coverage data available -- judge coverage from the alert data alone."
+    )
     return "\n".join([
         "You are a detection engineering advisor for the Sentinel SOC project.",
         "You are shown one alert that Sentinel's dual-AI triage stage flagged for",
@@ -123,6 +140,10 @@ def _build_prompt(triage_doc: dict) -> str:
         "Decide whether this case points at a real detection weakness: the rule",
         "that fired is too broad/narrow for what actually happened, or the",
         "underlying technique looks like it has no matching rule in this repo.",
+        coverage_line,
+        "Don't propose new_rule_suggested for a technique already in that list --",
+        "consider rule_refinement_suggested instead if the existing rule for it",
+        "looks wrong.",
         "Respond with ONLY a single JSON object, no other text, matching this",
         "schema:",
         '{"verdict": "no_action_needed|rule_refinement_suggested|new_rule_suggested",',
@@ -255,9 +276,12 @@ async def main_async(args: argparse.Namespace) -> int:
     queue = await find_review_queue(mcp_url, mcp_token, args.lookback_hours, args.max_alerts)
     print(f"Found {len(queue)} alert(s) in the review queue.")
 
+    covered_techniques = await fetch_coverage(mcp_url, mcp_token)
+    print(f"Loaded {len(covered_techniques)} already-covered technique(s) from get_detection_coverage.")
+
     written = 0
     for triage_doc in queue:
-        prompt = _build_prompt(triage_doc)
+        prompt = _build_prompt(triage_doc, covered_techniques)
         assessment = _call_claude(prompt, args.model, api_key)
         print(f"  alert_id={triage_doc.get('alert_id', 'unknown')}: {assessment['verdict']}")
         out_dir = write_draft(triage_doc, assessment, args.dry_run)
