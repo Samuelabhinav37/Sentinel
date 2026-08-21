@@ -117,6 +117,28 @@ caught something real:
 Every rule also carries Kibana alert suppression grouped by `host.name`, collapsing the
 "one attacker action, several audit records" duplication found during Linux validation.
 
+## Measured Detection Speed
+
+Six rules have an individually isolated, precisely-timed live-fire measurement (command
+executed → alert appears in Kibana) — every other validated rule is a confirmed true
+positive too, just via Mordor replay/synthetic events (no meaningful MTTD to measure) or a
+batched live-fire pass where several commands ran back-to-back, so exec-to-alert
+correlation isn't precise enough to attribute per rule. These six are the real numbers:
+
+| Rule | ATT&CK Technique | MTTD (attack → alert) |
+|---|---|---|
+| Netcat reverse shell | [T1059](https://attack.mitre.org/techniques/T1059/) | **45s** |
+| Sensor container stopped/killed | [T1562.001](https://attack.mitre.org/techniques/T1562/001/) | 74s |
+| `curl`/`wget` download-and-execute | [T1105](https://attack.mitre.org/techniques/T1105/) | 131s |
+| Cron persistence (`/etc/cron.d` write) | [T1053.003](https://attack.mitre.org/techniques/T1053/003/) | 139s |
+| Base64 decode-and-execute | [T1059.004](https://attack.mitre.org/techniques/T1059/004/) | 149s |
+| Direct `/etc/shadow` access | [T1003.008](https://attack.mitre.org/techniques/T1003/008/) | 151s |
+
+Stacked against the push triage pipeline's separately measured **67s** alert-fired-to-
+triage-written latency (single-model, see below), a full attack-to-triage cycle lands
+around **112s** for the fastest-measured rule and **218s** for the slowest — two
+independently measured stages of the same pipeline, not one end-to-end timer.
+
 ## LLM Triage & Automated Response
 
 Two triage pipelines write to the same `sentinel-triage` index for side-by-side comparison:
@@ -265,8 +287,10 @@ telemetry.
       reads the `cross_check_agreement` review queue over the MCP layer and drafts
       proposed rules under `detections/drafts/` for human approval. Not yet run
       against a live MCP server/Anthropic key.
-- [ ] **Presentation pass** — README architecture diagram, an MTTD comparison table,
-      and a short demo video/GIF of one attack → alert → response loop.
+- [ ] **Presentation pass** (in progress) — architecture diagram and an MTTD
+      comparison table (see above) are done; still need a short demo video/GIF of one
+      attack → alert → response loop, which needs a live run against deployed
+      infrastructure to record.
 
 ## Tools & References
 
