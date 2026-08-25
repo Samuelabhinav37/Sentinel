@@ -9,9 +9,15 @@ being deployed live against [Elastic](https://www.elastic.co/) (the primary runn
 [Splunk](https://www.splunk.com/) is a secondary Sigma compile target used to prove
 portability, not a second thing to operate.
 
-**Standalone-strength test**: detection, correlation, SOAR response, and an LLM triage
-pipeline that closes the loop against its own attack emulation — this repo is a complete SOC
-on its own, independent of any sibling projects it may sit alongside.
+> **Project status:** lab and reference environment. Detection content and supporting
+> infrastructure are implemented in this repository, while several integrations and
+> response paths remain deployment-dependent. Do not treat automated response as a
+> production safety boundary without independent authorization, rollback, and recovery
+> controls.
+
+Sentinel can be evaluated independently from its sibling projects. Its detection,
+correlation, triage, and response components demonstrate an end-to-end SOC workflow rather
+than production certification.
 
 ## Architecture
 
