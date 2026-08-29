@@ -15,6 +15,7 @@ and to the sentinel-response-actions Elasticsearch index for the same
 auditability every other part of this pipeline has.
 """
 import base64
+import hmac
 import json
 import os
 import signal
@@ -79,7 +80,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"status": "error", "detail": "unknown endpoint"})
             return
 
-        if self.headers.get("X-Responder-Token") != RESPONDER_TOKEN:
+        if not hmac.compare_digest(self.headers.get("X-Responder-Token", ""), RESPONDER_TOKEN):
             self._json(401, {"status": "error", "detail": "unauthorized"})
             return
 

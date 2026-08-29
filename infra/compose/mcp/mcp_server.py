@@ -20,6 +20,7 @@ apart from "has real effect" without parsing docstrings.
 """
 import base64
 import fnmatch
+import hmac
 import json
 import os
 import urllib.request
@@ -60,6 +61,11 @@ ALLOWED_INDEX_PATTERNS = [
     "winlogbeat-*",
     "auditbeat-*",
 ]
+
+# Caller-supplied `size` is clamped to this regardless of what's asked for --
+# an unbounded size (or an expensive query_string) is otherwise a free DoS
+# lever against the Elastic cluster from anything holding the MCP token.
+MAX_SEARCH_SIZE = 100
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 READ_ONLY_OPEN_WORLD = ToolAnnotations(read_only_hint=True, open_world_hint=True)
@@ -149,8 +155,10 @@ mcp = MCPServer("sentinel")
 @mcp.tool(annotations=READ_ONLY)
 def search_alerts(query: str = "", size: int = 20, from_time: str | None = None, to_time: str | None = None) -> dict:
     """Search Kibana security alerts. `query` is a Lucene query string
-    (empty matches all); `size` caps returned hits (default 20). Optional
-    `from_time`/`to_time` (ISO8601) filter on @timestamp."""
+    (empty matches all); `size` caps returned hits (default 20, clamped to
+    MAX_SEARCH_SIZE). Optional `from_time`/`to_time` (ISO8601) filter on
+    @timestamp."""
+    size = max(1, min(size, MAX_SEARCH_SIZE))
     body = {"query": _range_query(query, from_time, to_time), "size": size}
     return _elastic_request(".alerts-security.alerts-default*/_search", "POST", body)
 
@@ -166,10 +174,12 @@ def get_triage(alert_id: str) -> dict:
 def search_index(index_pattern: str, query: str = "", size: int = 20, from_time: str | None = None, to_time: str | None = None) -> dict:
     """Search an allowlisted Sentinel index (sentinel-triage,
     sentinel-response-actions, winlogbeat-*, auditbeat-*, or the security
-    alerts pattern). Rejects anything outside that allowlist. Optional
-    `from_time`/`to_time` (ISO8601) filter on @timestamp."""
+    alerts pattern). Rejects anything outside that allowlist. `size` is
+    clamped to MAX_SEARCH_SIZE. Optional `from_time`/`to_time` (ISO8601)
+    filter on @timestamp."""
     if not _index_allowed(index_pattern):
         return {"error": f"index pattern '{index_pattern}' is not allowlisted", "allowed": ALLOWED_INDEX_PATTERNS}
+    size = max(1, min(size, MAX_SEARCH_SIZE))
     body = {"query": _range_query(query, from_time, to_time), "size": size}
     return _elastic_request(f"{index_pattern}/_search", "POST", body)
 
@@ -213,11 +223,20 @@ def get_alert_context(alert_id: str) -> dict:
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
-def trigger_shuffle_response(pid: int, reason: str, alert_id: str) -> dict:
+def trigger_shuffle_response(pid: int, reason: str, alert_id: str, human_confirmed: bool = False) -> dict:
     """Trigger the Shuffle auto-response workflow to kill a process by pid,
     the same call n8n's Cross-Check Gate makes today. Shuffle and the
     responder still enforce the protected-process allowlist -- this does
-    not bypass it."""
+    not bypass it.
+
+    Unlike n8n's Cross-Check Gate, this tool has no dual-AI agreement
+    requirement of its own -- anything holding the MCP token can reach it
+    directly. `human_confirmed` must be explicitly passed as true: it exists
+    so an agent can't fire this as a quiet side effect of routine triage
+    browsing, and its presence in the call is what an approving human (or a
+    client's tool-use confirmation UI) is actually signing off on."""
+    if not human_confirmed:
+        return {"error": "human_confirmed must be true -- this bypasses the dual-AI agreement gate n8n normally requires; pass human_confirmed=true only after explicit human sign-off on this specific kill"}
     body = {"pid": pid, "reason": reason, "alert_id": alert_id}
     req = urllib.request.Request(
         SHUFFLE_WEBHOOK_URL,
@@ -316,7 +335,7 @@ def velociraptor_run_hunt(vql: str) -> dict:
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        if request.headers.get("X-MCP-Token") != MCP_TOKEN:
+        if not hmac.compare_digest(request.headers.get("X-MCP-Token", ""), MCP_TOKEN):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
 
