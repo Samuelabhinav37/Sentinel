@@ -32,6 +32,13 @@ services:
       - "5678:5678"
     volumes:
       - n8n_data:/home/node/.n8n
+    healthcheck:
+      # n8n's documented unauthenticated readiness endpoint.
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:5678/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
 
   ollama:
     image: ollama/ollama:latest
