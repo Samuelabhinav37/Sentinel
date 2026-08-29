@@ -91,6 +91,56 @@ def test_protected_check_is_exact_match_not_substring():
     assert d.proceed is True
 
 
+def test_recent_kill_count_missing_file_is_zero():
+    assert responder.recent_kill_count(path="/no/such/file", window_minutes=60) == 0
+
+
+def test_recent_kill_count_filters_by_window_result_and_shape(tmp_path=None):
+    if tmp_path is None:
+        return  # needs pytest's tmp_path fixture
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+
+    def ago(mins):
+        return (now - timedelta(minutes=mins)).isoformat()
+
+    path = os.path.join(str(tmp_path), "actions.jsonl")
+    with open(path, "w") as f:
+        for row in [
+            {"result": "killed", "@timestamp": ago(5)},              # counts
+            {"result": "kill-unconfirmed", "@timestamp": ago(30)},   # counts
+            {"result": "killed", "@timestamp": ago(120)},            # outside 60m
+            {"result": "rejected", "@timestamp": ago(1)},            # not a kill
+            {"result": "killed"},                                    # no timestamp
+            {"not": "the expected shape"},                           # ignored
+        ]:
+            f.write(_json.dumps(row) + "\n")
+        f.write("{ not valid json at all\n")                         # ignored
+
+    assert responder.recent_kill_count(path=path, window_minutes=60, now=now) == 2
+    assert responder.recent_kill_count(path=path, window_minutes=180, now=now) == 3
+
+
+def test_confirm_gone_true_when_process_already_absent():
+    assert responder.confirm_gone(4321, read_comm_fn=lambda p: "", delay=0) is True
+
+
+def test_confirm_gone_rechecks_after_delay():
+    seq = iter(["python3", ""])  # present, then gone
+    assert responder.confirm_gone(4321, read_comm_fn=lambda p: next(seq), delay=0) is True
+
+
+def test_confirm_gone_false_when_still_present():
+    assert responder.confirm_gone(4321, read_comm_fn=lambda p: "python3", delay=0) is False
+
+
+def test_breaker_constants_have_sane_defaults():
+    assert responder.RESPONDER_MAX_KILLS >= 1
+    assert responder.RESPONDER_WINDOW_MINUTES >= 1
+
+
 def test_main_refuses_to_start_without_env(monkeypatch=None):
     # Only meaningful under pytest (monkeypatch); skipped in script mode.
     if monkeypatch is None:

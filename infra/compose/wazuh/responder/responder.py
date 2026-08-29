@@ -21,9 +21,10 @@ import hmac
 import json
 import os
 import signal
+import time
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Read with a fallback rather than a hard KeyError at import time, so the
@@ -36,6 +37,18 @@ RESPONDER_TOKEN = os.environ.get("RESPONDER_TOKEN", "")
 ELASTIC_URL = os.environ.get("ELASTIC_URL", "")
 ELASTIC_PASSWORD = os.environ.get("ELASTIC_PASSWORD", "")
 LOG_PATH = os.environ.get("RESPONDER_LOG_PATH", "/var/log/sentinel-responder/actions.jsonl")
+
+# Circuit breaker: at most MAX_KILLS successful kills in a trailing WINDOW.
+# A dual-AI gate misfire, or an injection that somehow gets past both
+# models, should not be able to walk a host process by process -- past the
+# cap, every further request is rejected until the window clears and a
+# human has looked. Counted from this service's own audit log.
+RESPONDER_MAX_KILLS = int(os.environ.get("RESPONDER_MAX_KILLS", "3"))
+RESPONDER_WINDOW_MINUTES = int(os.environ.get("RESPONDER_WINDOW_MINUTES", "60"))
+
+# SIGKILL is delivered asynchronously; wait this long before the single
+# post-kill re-check that decides "killed" vs "kill-unconfirmed".
+RESPONDER_VERIFY_DELAY = float(os.environ.get("RESPONDER_VERIFY_DELAY", "0.2"))
 
 # Never kill these regardless of what a rule/LLM decided -- this project's
 # own sensors, and core host services whose loss would be worse than
@@ -114,6 +127,53 @@ def evaluate_kill(raw_pid, *, read_comm_fn=read_comm, protected=PROTECTED_COMMS)
     return KillDecision(True, 200, "", "", comm=comm, pid=pid)
 
 
+def recent_kill_count(*, path: str | None = None, window_minutes: int | None = None,
+                      now: datetime | None = None) -> int:
+    """Kills fired (result "killed" or "kill-unconfirmed") recorded in the
+    audit log within the trailing window. Tolerates a missing file and skips
+    any line that isn't a JSON object with a parseable @timestamp; a naive
+    timestamp is read as UTC."""
+    path = LOG_PATH if path is None else path
+    window_minutes = RESPONDER_WINDOW_MINUTES if window_minutes is None else window_minutes
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=window_minutes)
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return 0
+    count = 0
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict) or entry.get("result") not in ("killed", "kill-unconfirmed"):
+            continue
+        try:
+            when = datetime.fromisoformat(entry.get("@timestamp"))
+        except (TypeError, ValueError):
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when >= cutoff:
+            count += 1
+    return count
+
+
+def confirm_gone(pid: int, *, read_comm_fn=read_comm, delay: float | None = None) -> bool:
+    """True once `pid` is no longer present. One re-check after a short
+    delay, since SIGKILL delivery is asynchronous -- a process still there
+    after that is reported as 'kill-unconfirmed' rather than 'killed'."""
+    if not read_comm_fn(pid):
+        return True
+    time.sleep(RESPONDER_VERIFY_DELAY if delay is None else delay)
+    return not read_comm_fn(pid)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, status: int, body: dict) -> None:
         payload = json.dumps(body).encode()
@@ -162,16 +222,34 @@ class Handler(BaseHTTPRequestHandler):
             self._json(decision.http_status, {"status": "error", "detail": decision.client_detail})
             return
 
+        recent = recent_kill_count()
+        if recent >= RESPONDER_MAX_KILLS:
+            detail = (f"rate-limited: {recent} kill(s) in the last "
+                      f"{RESPONDER_WINDOW_MINUTES}m, at the cap of {RESPONDER_MAX_KILLS} -- "
+                      f"a human needs to review before automated response resumes")
+            entry["result"] = "rejected"
+            entry["detail"] = detail
+            log_action(entry)
+            self._json(429, {"status": "error", "detail": detail})
+            return
+
         try:
             os.kill(decision.pid, signal.SIGKILL)
-            entry["result"] = "killed"
-            log_action(entry)
-            self._json(200, {"status": "killed", "pid": decision.pid, "comm": decision.comm})
         except ProcessLookupError:
             entry["result"] = "rejected"
             entry["detail"] = "process exited before kill"
             log_action(entry)
             self._json(404, {"status": "error", "detail": "process exited before kill"})
+            return
+
+        if confirm_gone(decision.pid):
+            entry["result"] = "killed"
+            self._json(200, {"status": "killed", "pid": decision.pid, "comm": decision.comm})
+        else:
+            entry["result"] = "kill-unconfirmed"
+            entry["detail"] = "process still present after SIGKILL"
+            self._json(200, {"status": "kill-unconfirmed", "pid": decision.pid, "comm": decision.comm})
+        log_action(entry)
 
     def log_message(self, fmt, *args):
         print(f"{self.address_string()} - {fmt % args}")
