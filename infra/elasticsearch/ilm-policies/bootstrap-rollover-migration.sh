@@ -18,22 +18,30 @@
 #     into "<name>-000001", verify the doc count matches, delete the old
 #     plain index, then create an alias "<name>" -> "<name>-000001" with
 #     is_write_index=true. Elasticsearch has no in-place rename, so the
-#     reindex is unavoidable; this pauses the one Docker Compose service
-#     that writes to each target before reindexing, to avoid losing writes
-#     that land between the reindex snapshot and the old index's deletion.
+#     reindex is unavoidable. To avoid losing writes that land between the
+#     reindex and the old index's deletion, auditbeat-linux's writer (the
+#     auditbeat container) is stopped and restarted automatically; the
+#     n8n-written targets get an interactive checkpoint to stop their
+#     writers by hand instead (no single container to pause).
 #   - winlogbeat-ecs: no live data yet (Windows target is parked, see
 #     README's Roadmap) -- just creates the empty "winlogbeat-ecs-000001"
 #     index aliased as "winlogbeat-ecs" so the very first write from
 #     winlogbeat lands on a rollover-managed index instead of a plain one.
 #     Safe/idempotent to run before the Windows target ever exists.
 #
-# Safety: aborts before deleting anything if post-reindex doc counts don't
-# match, or if the target is already an alias (migration already ran).
+# Safety: prompts for a typed "yes" before touching anything and again
+# before the n8n-written indices (so their writers can be stopped first);
+# aborts before deleting anything if post-reindex doc counts don't match,
+# or if the target is already an alias (migration already ran).
 #
 # Usage:
 #   ELASTIC_URL=http://100.103.246.10:9200 \
 #   ELASTIC_PASSWORD=... \
 #   ./bootstrap-rollover-migration.sh
+#
+# Set ASSUME_YES=1 to skip the confirmation prompts (for a re-run you have
+# already vetted). With no terminal and no ASSUME_YES the script refuses
+# rather than guess, since the next steps delete live indices.
 #
 # Run from the VM (or anywhere with `docker compose` access to
 # infra/compose/wazuh/auditbeat.yml) so the auditbeat pause/resume works;
@@ -48,6 +56,24 @@ AUTH=(-u "elastic:${ELASTIC_PASSWORD}")
 AUDITBEAT_COMPOSE="$(cd "$(dirname "$0")/../../compose/wazuh" && pwd)/auditbeat.yml"
 
 es() { curl -sf "${AUTH[@]}" "$@"; }
+
+confirm() {
+  # confirm "question" -- returns 0 on a typed "yes", exits 1 otherwise.
+  # ASSUME_YES=1 auto-answers yes; with no readable /dev/tty we refuse
+  # instead of assuming, because what follows deletes live indices.
+  local question="$1" reply
+  if [[ "${ASSUME_YES:-}" == "1" ]]; then
+    echo "  (ASSUME_YES=1) ${question} -> yes"
+    return 0
+  fi
+  if ! { : < /dev/tty; } 2>/dev/null; then
+    echo "ABORT: ${question}" >&2
+    echo "  No terminal to confirm on. Re-run interactively, or set ASSUME_YES=1 once you have vetted the plan above." >&2
+    exit 1
+  fi
+  read -r -p "  ${question} [type 'yes']: " reply < /dev/tty
+  [[ "$reply" == "yes" ]] || { echo "Aborted at operator request." >&2; exit 1; }
+}
 
 target_kind() {
   # prints "alias", "index", or "absent" for a given name
@@ -126,17 +152,50 @@ bootstrap_fresh() {
   echo "[$name] done."
 }
 
+cat <<EOF
+
+About to migrate these indices onto ILM-managed rollover aliases on
+  ${ELASTIC_URL}
+
+  auditbeat-linux            reindex -> -000001, DELETE old index, add write alias
+  sentinel-triage            reindex -> -000001, DELETE old index, add write alias
+  sentinel-response-actions  reindex -> -000001, DELETE old index, add write alias
+  winlogbeat-ecs             create empty -000001 + alias (no existing data)
+
+Targets already an alias or absent are skipped. Each old plain index is
+deleted only after its reindexed copy matches on doc count. This still
+DELETES live indices -- make sure you have a snapshot / restore path.
+EOF
+confirm "Proceed with the migration above?"
+
 migrate_existing_index "auditbeat-linux" \
   "docker compose -f '$AUDITBEAT_COMPOSE' stop auditbeat" \
   "docker compose -f '$AUDITBEAT_COMPOSE' start auditbeat"
 
 # sentinel-triage / sentinel-response-actions are written by n8n's HTTP
 # calls (and, for the latter, the responder), not one single Docker Compose
-# service -- no automatic pause here. On a lab-volume alert rate the race
-# window is small; pause the n8n workflows by hand first if you want it
-# airtight.
+# service -- no automatic pause here. Only stop to ask if at least one of
+# them still needs migrating (a re-run where both are already aliases
+# shouldn't nag).
+n8n_targets_pending=0
+for t in sentinel-triage sentinel-response-actions; do
+  [[ "$(target_kind "$t")" == "index" ]] && n8n_targets_pending=1
+done
+if [[ "$n8n_targets_pending" == "1" ]]; then
+  echo
+  echo "sentinel-triage / sentinel-response-actions are written by the n8n"
+  echo "llm-triage workflow and the responder. Stop both now (deactivate the"
+  echo "workflow, stop the responder) so no write lands mid-reindex."
+  confirm "Confirm the n8n llm-triage workflow and the responder are stopped?"
+fi
+
 migrate_existing_index "sentinel-triage" "" ""
 migrate_existing_index "sentinel-response-actions" "" ""
+
+if [[ "$n8n_targets_pending" == "1" ]]; then
+  echo
+  echo ">>> Re-enable the n8n llm-triage workflow and the responder now."
+fi
 
 bootstrap_fresh "winlogbeat-ecs"
 
