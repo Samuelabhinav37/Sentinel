@@ -7,7 +7,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY mcp_server.py healthcheck.py .
+COPY mcp_server.py healthcheck.py ./
 HEALTHCHECK --interval=15s --timeout=5s --retries=5 --start-period=10s \
   CMD ["python", "healthcheck.py"]
 CMD ["python", "mcp_server.py"]

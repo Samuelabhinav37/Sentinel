@@ -5,3 +5,9 @@
 # runs it directly rather than relying on mcp's optional [cli] extra.
 mcp==2.0.0
 uvicorn==0.52.4
+# httpx2 arrives transitively via mcp (its HTTP/Streamable-HTTP backend --
+# confirmed: `pip install mcp==2.0.0` resolves httpx2==2.12.0 + httpcore2).
+# Pinned here because mcp_server.py imports it directly for its pooled
+# client, so the version it runs against shouldn't move silently under a
+# future mcp bump.
+httpx2==2.12.0
