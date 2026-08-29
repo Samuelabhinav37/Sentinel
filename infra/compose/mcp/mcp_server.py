@@ -23,10 +23,9 @@ import fnmatch
 import hmac
 import json
 import os
-import urllib.request
 from pathlib import Path
-from urllib.error import HTTPError
 
+import httpx2
 import uvicorn
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
@@ -72,16 +71,17 @@ READ_ONLY_OPEN_WORLD = ToolAnnotations(read_only_hint=True, open_world_hint=True
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False)
 ACTION_NON_DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 
+# httpx2 is already a dependency (mcp's own HTTP/Streamable-HTTP transport --
+# see requirements.txt), reused here as a module-level pooled client rather
+# than urllib so every tool call reuses a keep-alive connection to Elastic/
+# Wazuh/Shuffle/MISP instead of paying a fresh TCP handshake each time.
+_http_client = httpx2.Client()
+
 
 def _http_json(url: str, method: str = "GET", headers: dict | None = None, body: dict | None = None, timeout: int = 10) -> dict:
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode() if body is not None else None,
-        method=method,
-        headers=headers or {},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
+    resp = _http_client.request(method, url, headers=headers or {}, json=body, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _elastic_request(path: str, method: str = "GET", body: dict | None = None) -> dict:
@@ -108,6 +108,28 @@ def _range_query(query: str, from_time: str | None, to_time: str | None) -> dict
     if to_time:
         time_range["lte"] = to_time
     return {"bool": {"must": [base], "filter": [{"range": {"@timestamp": time_range}}]}}
+
+
+class _DocNotFound(Exception):
+    pass
+
+
+def _get_doc_by_id(index_or_alias: str, doc_id: str) -> dict:
+    # A plain `GET <index>/_doc/<id>` errors once `index_or_alias` is an ILM
+    # rollover alias spanning more than one backing index ("alias has more
+    # than one index associated with it, can't execute a single index op"),
+    # which sentinel-triage becomes after its first rollover -- _search by
+    # _id works across any number of backing indices, so every doc-by-id
+    # lookup goes through this instead of a direct _doc GET.
+    result = _elastic_request(
+        f"{index_or_alias}/_search", "POST",
+        {"query": {"term": {"_id": doc_id}}, "size": 1},
+    )
+    hits = result.get("hits", {}).get("hits", [])
+    if not hits:
+        raise _DocNotFound(doc_id)
+    hit = hits[0]
+    return {"_index": hit["_index"], "_id": hit["_id"], "found": True, "_source": hit["_source"]}
 
 
 def _response_actions_for(alert_id: str) -> dict:
@@ -138,8 +160,8 @@ def _wazuh_request(path: str) -> dict:
 
     try:
         return _call(_wazuh_token())
-    except HTTPError as e:
-        if e.code == 401:
+    except httpx2.HTTPStatusError as e:
+        if e.response.status_code == 401:
             _wazuh_token_cache.pop("token", None)
             return _call(_wazuh_token())
         raise
@@ -167,7 +189,10 @@ def search_alerts(query: str = "", size: int = 20, from_time: str | None = None,
 def get_triage(alert_id: str) -> dict:
     """Fetch the LLM triage verdict for a given alert id from the
     sentinel-triage index."""
-    return _elastic_request(f"sentinel-triage/_doc/{alert_id}")
+    try:
+        return _get_doc_by_id("sentinel-triage", alert_id)
+    except _DocNotFound:
+        return {"error": f"no triage doc found for alert_id {alert_id}"}
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -207,11 +232,9 @@ def get_alert_context(alert_id: str) -> dict:
 
     def _try_triage(doc_id: str) -> dict | None:
         try:
-            return _elastic_request(f"sentinel-triage/_doc/{doc_id}")
-        except HTTPError as e:
-            if e.code == 404:
-                return None
-            raise
+            return _get_doc_by_id("sentinel-triage", doc_id)
+        except _DocNotFound:
+            return None
 
     return {
         "alert_id": alert_id,
@@ -238,14 +261,8 @@ def trigger_shuffle_response(pid: int, reason: str, alert_id: str, human_confirm
     if not human_confirmed:
         return {"error": "human_confirmed must be true -- this bypasses the dual-AI agreement gate n8n normally requires; pass human_confirmed=true only after explicit human sign-off on this specific kill"}
     body = {"pid": pid, "reason": reason, "alert_id": alert_id}
-    req = urllib.request.Request(
-        SHUFFLE_WEBHOOK_URL,
-        data=json.dumps(body).encode(),
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return {"status": resp.status, "body": resp.read().decode()}
+    resp = _http_client.post(SHUFFLE_WEBHOOK_URL, json=body, timeout=10)
+    return {"status": resp.status_code, "body": resp.text}
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -278,17 +295,27 @@ def get_agent_sca(agent_id: str) -> dict:
     return _wazuh_request(f"sca/{agent_id}")
 
 
+# (mtime, parsed layer) of the last read -- the file only changes on this
+# VM's next `git pull`, so re-parsing it on every single tool call is pure
+# waste; invalidate on mtime change rather than trusting it forever.
+_attack_coverage_cache: tuple[float, dict] | None = None
+
+
 @mcp.tool(annotations=READ_ONLY)
 def get_detection_coverage() -> dict:
     """Return this repo's ATT&CK Navigator coverage layer -- which
     techniques have a Sigma rule and which rule file(s) cover them. Read
     from a bind-mounted snapshot of docs/attack_coverage.json, refreshed by
     this VM's last `git pull`, not computed live against the cluster."""
+    global _attack_coverage_cache
     if not ATTACK_COVERAGE_PATH.exists():
         return {"error": f"{ATTACK_COVERAGE_PATH} not found -- is docs/ bind-mounted?"}
-    layer = json.loads(ATTACK_COVERAGE_PATH.read_text(encoding="utf-8"))
+    mtime = ATTACK_COVERAGE_PATH.stat().st_mtime
+    if _attack_coverage_cache is None or _attack_coverage_cache[0] != mtime:
+        layer = json.loads(ATTACK_COVERAGE_PATH.read_text(encoding="utf-8"))
+        _attack_coverage_cache = (mtime, layer)
     return {
-        "layer": layer,
+        "layer": _attack_coverage_cache[1],
         "note": "snapshot of docs/attack_coverage.json as of this VM's last git pull, not live-computed",
     }
 
