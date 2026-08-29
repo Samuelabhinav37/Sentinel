@@ -37,6 +37,9 @@ processors:
           - equals:
               process.executable: "/usr/sbin/tailscaled"
 
+# index name is also the rollover alias managed by
+# infra/elasticsearch/ilm-policies/ -- see bootstrap-rollover-migration.sh
+# for the one-time migration off the plain index this used to write to.
 output.elasticsearch:
   hosts: ["${ELASTIC_URL}"]
   username: "elastic"

@@ -86,10 +86,15 @@ winlogbeat.modules:
 setup.template.enabled: false
 setup.ilm.enabled: false
 
+# index name is the rollover alias infra/elasticsearch/ilm-policies/
+# bootstrap-rollover-migration.sh creates -- run that (or otherwise create
+# the winlogbeat-ecs-000001 index + alias) before first boot, or this falls
+# back to writing a plain, non-ILM-managed "winlogbeat-ecs" index.
 output.elasticsearch:
   hosts: ["${elastic_url}"]
   username: "elastic"
   password: "${elastic_password}"
+  index: "winlogbeat-ecs"
 
 logging.level: info
 logging.to_files: true

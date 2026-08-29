@@ -1,7 +1,12 @@
 {
-  "index_patterns": ["winlogbeat-*", "logs-windows.*"],
+  "index_patterns": ["winlogbeat-ecs", "winlogbeat-ecs-*", "winlogbeat-*", "logs-windows.*"],
   "priority": 200,
   "template": {
+    "settings": {
+      "index.number_of_replicas": 0,
+      "index.lifecycle.name": "sentinel-telemetry-retention",
+      "index.lifecycle.rollover_alias": "winlogbeat-ecs"
+    },
     "mappings": {
       "properties": {
         "@timestamp": { "type": "date" },

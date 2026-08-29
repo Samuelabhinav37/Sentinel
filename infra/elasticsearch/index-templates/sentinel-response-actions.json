@@ -1,7 +1,12 @@
 {
-  "index_patterns": ["sentinel-response-actions"],
+  "index_patterns": ["sentinel-response-actions", "sentinel-response-actions-*"],
   "priority": 200,
   "template": {
+    "settings": {
+      "index.number_of_replicas": 0,
+      "index.lifecycle.name": "sentinel-audit-retention",
+      "index.lifecycle.rollover_alias": "sentinel-response-actions"
+    },
     "mappings": {
       "properties": {
         "@timestamp": { "type": "date" },

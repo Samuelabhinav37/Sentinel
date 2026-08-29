@@ -2,6 +2,11 @@
   "index_patterns": ["sentinel-triage*"],
   "priority": 200,
   "template": {
+    "settings": {
+      "index.number_of_replicas": 0,
+      "index.lifecycle.name": "sentinel-audit-retention",
+      "index.lifecycle.rollover_alias": "sentinel-triage"
+    },
     "mappings": {
       "date_detection": false,
       "properties": {

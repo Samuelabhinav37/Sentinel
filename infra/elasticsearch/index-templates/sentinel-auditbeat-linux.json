@@ -2,6 +2,11 @@
   "index_patterns": ["auditbeat-linux", "auditbeat-*"],
   "priority": 200,
   "template": {
+    "settings": {
+      "index.number_of_replicas": 0,
+      "index.lifecycle.name": "sentinel-telemetry-retention",
+      "index.lifecycle.rollover_alias": "auditbeat-linux"
+    },
     "mappings": {
       "properties": {
         "@timestamp": { "type": "date" },
