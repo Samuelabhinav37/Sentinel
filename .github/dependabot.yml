@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # The MCP server -- the httpx2 provenance question is exactly what this
+  # is meant to surface early.
+  - package-ecosystem: pip
+    directory: /infra/compose/mcp
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Sigma toolchain + the detection-advisor extra.
+  - package-ecosystem: pip
+    directory: /detections
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /detections/scripts
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,0 +1,11 @@
+# Transitive-dependency pins for the pieces most likely to move silently
+# under a future `mcp` release. mcp brings its own HTTP client stack
+# (httpx2 / httpcore2), and mcp_server.py imports httpx2 *directly* for its
+# pooled client -- so freeze the versions the service is built and tested
+# against here, applied via `pip install -c constraints.txt -r requirements.txt`.
+#
+# These only constrain; they never pull a package in on their own. To
+# refresh: install `mcp==<version in requirements.txt>` into a clean env and
+# copy the resolved httpx2 / httpcore2 versions back here.
+httpx2==2.12.0
+httpcore2==2.12.0
