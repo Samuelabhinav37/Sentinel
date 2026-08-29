@@ -106,8 +106,8 @@ jobs:
           mapfile -t pyfiles < <(find infra -name '*.py')
           python -m py_compile "${pyfiles[@]}"
 
-      - name: responder unit tests (stdlib only)
-        run: pytest -q infra/compose/wazuh/responder/
+      - name: stdlib-only unit tests (responder, prompt-injection guard)
+        run: pytest -q infra/compose/wazuh/responder/ infra/compose/soar/n8n/tests/
 
   mcp-tests:
     runs-on: ubuntu-latest
