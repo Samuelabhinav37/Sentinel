@@ -20,10 +20,10 @@ module "elastic_vm" {
 
   compartment_ocid    = var.compartment_ocid
   availability_domain = local.ad
-  subnet_id            = oci_core_subnet.public.id
-  image_id             = data.oci_core_images.ubuntu.images[0].id
-  ssh_public_key_path  = var.ssh_public_key_path
-  tailscale_authkey    = var.tailscale_authkey
+  subnet_id           = oci_core_subnet.public.id
+  image_id            = data.oci_core_images.ubuntu.images[0].id
+  ssh_public_key_path = var.ssh_public_key_path
+  tailscale_authkey   = var.tailscale_authkey
 
   display_name = "sentinel-elastic"
   ocpus        = var.elastic_ocpus
@@ -36,10 +36,10 @@ module "wazuh_vm" {
 
   compartment_ocid    = var.compartment_ocid
   availability_domain = local.ad
-  subnet_id            = oci_core_subnet.public.id
-  image_id             = data.oci_core_images.ubuntu.images[0].id
-  ssh_public_key_path  = var.ssh_public_key_path
-  tailscale_authkey    = var.tailscale_authkey
+  subnet_id           = oci_core_subnet.public.id
+  image_id            = data.oci_core_images.ubuntu.images[0].id
+  ssh_public_key_path = var.ssh_public_key_path
+  tailscale_authkey   = var.tailscale_authkey
 
   display_name = "sentinel-wazuh"
   ocpus        = var.wazuh_ocpus
@@ -52,10 +52,10 @@ module "soar_vm" {
 
   compartment_ocid    = var.compartment_ocid
   availability_domain = local.ad
-  subnet_id            = oci_core_subnet.public.id
-  image_id             = data.oci_core_images.ubuntu.images[0].id
-  ssh_public_key_path  = var.ssh_public_key_path
-  tailscale_authkey    = var.tailscale_authkey
+  subnet_id           = oci_core_subnet.public.id
+  image_id            = data.oci_core_images.ubuntu.images[0].id
+  ssh_public_key_path = var.ssh_public_key_path
+  tailscale_authkey   = var.tailscale_authkey
 
   display_name = "sentinel-soar"
   ocpus        = var.soar_ocpus

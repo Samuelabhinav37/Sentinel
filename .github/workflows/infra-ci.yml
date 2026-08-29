@@ -1,0 +1,133 @@
+name: Infra CI
+
+# Sigma content has its own gate (sigma-ci.yml). This one covers everything
+# under infra/ -- the MCP server, the responder, the Compose stacks, the
+# Elasticsearch templates/ILM, the n8n workflows and the Terraform -- none
+# of which was checked by anything before.
+
+on:
+  push:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-ci.yml"
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-ci.yml"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck (errors only)
+        run: |
+          mapfile -t scripts < <(find infra -name '*.sh')
+          printf '%s\n' "${scripts[@]}"
+          shellcheck -S error "${scripts[@]}"
+
+      - name: Hadolint (MCP Dockerfile)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: infra/compose/mcp/Dockerfile
+          failure-threshold: warning
+
+      - name: JSON parses (index templates, ILM policies, n8n workflows)
+        run: |
+          python - <<'PY'
+          import json, sys, pathlib
+          roots = ["infra/elasticsearch", "infra/compose/soar/n8n/workflows", "infra/kibana"]
+          bad = 0
+          for root in roots:
+              for p in pathlib.Path(root).rglob("*.json"):
+                  try:
+                      json.loads(p.read_text(encoding="utf-8"))
+                      print("ok  ", p)
+                  except Exception as e:
+                      bad += 1
+                      print("FAIL", p, e)
+          sys.exit(1 if bad else 0)
+          PY
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: |
+          set -e
+          files=$(find infra/compose -name 'docker-compose*.yml')
+          for f in $files; do
+            echo "::group::$f"
+            docker compose -f "$f" config -q
+            echo "::endgroup::"
+          done
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive infra/
+
+      - name: terraform validate (OCI root)
+        working-directory: infra
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: terraform validate (Azure root)
+        working-directory: infra/azure
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install linters
+        run: pip install ruff pytest
+
+      - name: ruff (bug classes only)
+        run: ruff check --select E9,F63,F7,F82 infra/
+
+      - name: py_compile every infra script
+        run: |
+          mapfile -t pyfiles < <(find infra -name '*.py')
+          python -m py_compile "${pyfiles[@]}"
+
+      - name: responder unit tests (stdlib only)
+        run: pytest -q infra/compose/wazuh/responder/
+
+  mcp-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MCP server deps + pytest
+        run: |
+          pip install pytest
+          pip install -c infra/compose/mcp/constraints.txt -r infra/compose/mcp/requirements.txt
+
+      - name: MCP guard-rail tests
+        env:
+          MCP_TOKEN: ci
+          ELASTIC_URL: http://localhost:9200
+          ELASTIC_PASSWORD: ci
+          WAZUH_API_URL: http://localhost:55000
+          WAZUH_API_PASSWORD: ci
+          SHUFFLE_WEBHOOK_URL: http://localhost/webhook
+        run: pytest -q infra/compose/mcp/test_mcp_helpers.py
