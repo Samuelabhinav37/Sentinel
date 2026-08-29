@@ -14,19 +14,28 @@ mesh) and a protected-process allowlist, then logged to a local JSONL file
 and to the sentinel-response-actions Elasticsearch index for the same
 auditability every other part of this pipeline has.
 """
+from __future__ import annotations
+
 import base64
 import hmac
 import json
 import os
 import signal
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-RESPONDER_TOKEN = os.environ["RESPONDER_TOKEN"]
-ELASTIC_URL = os.environ["ELASTIC_URL"]
-ELASTIC_PASSWORD = os.environ["ELASTIC_PASSWORD"]
-LOG_PATH = "/var/log/sentinel-responder/actions.jsonl"
+# Read with a fallback rather than a hard KeyError at import time, so the
+# decision logic below can be imported and unit-tested without a full
+# environment. `main()` still refuses to start the server if any of these
+# is actually unset -- a misconfigured responder fails loud, it just fails
+# at startup with a clear message instead of a bare KeyError on import.
+REQUIRED_ENV = ("RESPONDER_TOKEN", "ELASTIC_URL", "ELASTIC_PASSWORD")
+RESPONDER_TOKEN = os.environ.get("RESPONDER_TOKEN", "")
+ELASTIC_URL = os.environ.get("ELASTIC_URL", "")
+ELASTIC_PASSWORD = os.environ.get("ELASTIC_PASSWORD", "")
+LOG_PATH = os.environ.get("RESPONDER_LOG_PATH", "/var/log/sentinel-responder/actions.jsonl")
 
 # Never kill these regardless of what a rule/LLM decided -- this project's
 # own sensors, and core host services whose loss would be worse than
@@ -66,6 +75,45 @@ def log_action(entry: dict) -> None:
         print(f"warning: failed to log action to Elasticsearch: {e}")
 
 
+@dataclass
+class KillDecision:
+    """Outcome of evaluating a kill request, before any side effect runs.
+
+    `log_detail` is what lands in the audit entry's `detail`; `client_detail`
+    is what the HTTP caller sees -- they differ only for a protected process
+    (the audit says "protected process", the caller is told which one)."""
+
+    proceed: bool
+    http_status: int
+    log_detail: str
+    client_detail: str
+    comm: str | None = None
+    pid: int | None = None
+
+
+def evaluate_kill(raw_pid, *, read_comm_fn=read_comm, protected=PROTECTED_COMMS) -> KillDecision:
+    """Decide whether a kill may proceed. Pure -- no os.kill, no logging.
+
+    Mirrors exactly the checks the HTTP handler used to inline: a numeric
+    string is coerced to int (some callers can only template a string),
+    the pid must then be an int > 1, the process must exist, and its comm
+    must not be on the protected allowlist."""
+    pid = raw_pid
+    if isinstance(pid, str) and pid.isdigit():
+        pid = int(pid)
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return KillDecision(False, 400, "missing/invalid pid", "missing/invalid pid")
+    comm = read_comm_fn(pid)
+    if not comm:
+        return KillDecision(False, 404, "process not found", "process not found", comm="", pid=pid)
+    if comm in protected:
+        return KillDecision(
+            False, 403, "protected process",
+            f"refusing to kill protected process '{comm}'", comm=comm, pid=pid,
+        )
+    return KillDecision(True, 200, "", "", comm=comm, pid=pid)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, status: int, body: dict) -> None:
         payload = json.dumps(body).encode()
@@ -103,42 +151,22 @@ class Handler(BaseHTTPRequestHandler):
             "alert_id": alert_id,
         }
 
-        # Some callers (e.g. Shuffle's variable substitution into a JSON
-        # body template) can only produce a numeric *string*, not a JSON
-        # number -- accept either rather than silently rejecting a
-        # well-formed request over a caller-side typing quirk.
-        if isinstance(pid, str) and pid.isdigit():
-            pid = int(pid)
+        decision = evaluate_kill(pid)
+        if decision.comm is not None:
+            entry["comm"] = decision.comm
 
-        if not isinstance(pid, int) or pid <= 1:
+        if not decision.proceed:
             entry["result"] = "rejected"
-            entry["detail"] = "missing/invalid pid"
+            entry["detail"] = decision.log_detail
             log_action(entry)
-            self._json(400, {"status": "error", "detail": "missing/invalid pid"})
-            return
-
-        comm = read_comm(pid)
-        entry["comm"] = comm
-
-        if not comm:
-            entry["result"] = "rejected"
-            entry["detail"] = "process not found"
-            log_action(entry)
-            self._json(404, {"status": "error", "detail": "process not found"})
-            return
-
-        if comm in PROTECTED_COMMS:
-            entry["result"] = "rejected"
-            entry["detail"] = "protected process"
-            log_action(entry)
-            self._json(403, {"status": "error", "detail": f"refusing to kill protected process '{comm}'"})
+            self._json(decision.http_status, {"status": "error", "detail": decision.client_detail})
             return
 
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(decision.pid, signal.SIGKILL)
             entry["result"] = "killed"
             log_action(entry)
-            self._json(200, {"status": "killed", "pid": pid, "comm": comm})
+            self._json(200, {"status": "killed", "pid": decision.pid, "comm": decision.comm})
         except ProcessLookupError:
             entry["result"] = "rejected"
             entry["detail"] = "process exited before kill"
@@ -149,7 +177,14 @@ class Handler(BaseHTTPRequestHandler):
         print(f"{self.address_string()} - {fmt % args}")
 
 
-if __name__ == "__main__":
+def main() -> None:
+    missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
+    if missing:
+        raise SystemExit(f"sentinel-responder: missing required env: {', '.join(missing)}")
     server = ThreadingHTTPServer(("0.0.0.0", 8088), Handler)
     print("sentinel-responder listening on :8088")
     server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
