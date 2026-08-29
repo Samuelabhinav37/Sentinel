@@ -164,38 +164,98 @@ def test_search_alerts_clamps_size_and_targets_alerts_index():
     assert body["size"] == m.MAX_SEARCH_SIZE
 
 
+# ------------------------------------------------------ agreement lookup
+
+def test_triage_is_actionable():
+    assert m._triage_is_actionable({"severity": "high", "false_positive_likelihood": "low"}) is True
+    assert m._triage_is_actionable({"severity": "CRITICAL", "false_positive_likelihood": "Low"}) is True
+    assert m._triage_is_actionable({"severity": "medium", "false_positive_likelihood": "low"}) is False
+    assert m._triage_is_actionable({"severity": "high", "false_positive_likelihood": "medium"}) is False
+    assert m._triage_is_actionable({}) is False
+    assert m._triage_is_actionable(None) is False
+
+
+ACT = {"severity": "high", "false_positive_likelihood": "low"}
+
+
+def test_dual_model_agrees_true_when_record_shows_both_models_actionable():
+    doc = {"_source": {"cross_check_agreement": True, "triage": ACT, "triage_secondary": dict(ACT)}}
+    with patch(m, "_get_doc_by_id", lambda idx, did: doc):
+        ok, why = m._dual_model_agrees("a1")
+    assert ok is True and why == ""
+
+
+def test_dual_model_agrees_false_when_no_push_record():
+    def missing(idx, did):
+        raise m._DocNotFound(did)
+
+    with patch(m, "_get_doc_by_id", missing):
+        ok, why = m._dual_model_agrees("a1")
+    assert ok is False and "a1-push" in why
+
+
+def test_dual_model_agrees_false_when_flag_not_true():
+    doc = {"_source": {"cross_check_agreement": False, "triage": ACT, "triage_secondary": dict(ACT)}}
+    with patch(m, "_get_doc_by_id", lambda idx, did: doc):
+        ok, why = m._dual_model_agrees("a1")
+    assert ok is False and "cross_check_agreement" in why
+
+
+def test_dual_model_agrees_false_when_one_model_not_actionable():
+    doc = {"_source": {"cross_check_agreement": True, "triage": ACT,
+                       "triage_secondary": {"severity": "medium", "false_positive_likelihood": "low"}}}
+    with patch(m, "_get_doc_by_id", lambda idx, did: doc):
+        ok, why = m._dual_model_agrees("a1")
+    assert ok is False and "both models" in why
+
+
+def test_dual_model_agrees_fails_closed_on_lookup_error():
+    def boom(idx, did):
+        raise RuntimeError("ES down")
+
+    with patch(m, "_get_doc_by_id", boom):
+        ok, why = m._dual_model_agrees("a1")
+    assert ok is False and "could not read" in why
+
+
 # ------------------------------------------------ trigger_shuffle_response
 
-def test_trigger_requires_human_confirmed():
-    calls = []
+class _RecordingClient:
+    def __init__(self):
+        self.posted = None
 
-    class FakeClient:
-        def post(self, *a, **k):
-            calls.append((a, k))
-            raise AssertionError("must not POST without human_confirmed")
+    def post(self, url, json=None, timeout=None):
+        self.posted = {"url": url, "json": json}
 
-    with patch(m, "_http_client", FakeClient()):
+        class R:
+            status_code = 200
+            text = "ok"
+
+        return R()
+
+
+def test_trigger_refuses_without_agreement_or_human_confirmed():
+    client = _RecordingClient()
+    with patch(m, "_dual_model_agrees", lambda aid: (False, "no record")), patch(m, "_http_client", client):
         out = m.trigger_shuffle_response(pid=42, reason="x", alert_id="a", human_confirmed=False)
-    assert "error" in out and calls == []
+    assert "error" in out
+    assert client.posted is None
 
 
-def test_trigger_posts_when_human_confirmed():
-    posted = {}
+def test_trigger_proceeds_on_agreement_without_human_confirmed():
+    client = _RecordingClient()
+    with patch(m, "_dual_model_agrees", lambda aid: (True, "")), patch(m, "_http_client", client):
+        out = m.trigger_shuffle_response(pid=42, reason="rev shell", alert_id="a1", human_confirmed=False)
+    assert client.posted["json"] == {"pid": 42, "reason": "rev shell", "alert_id": "a1"}
+    assert out == {"status": 200, "body": "ok", "gate": "cross_check_agreement"}
 
-    class FakeResp:
-        status_code = 200
-        text = "ok"
 
-    class FakeClient:
-        def post(self, url, json=None, timeout=None):
-            posted["url"] = url
-            posted["json"] = json
-            return FakeResp()
-
-    with patch(m, "_http_client", FakeClient()):
-        out = m.trigger_shuffle_response(pid=42, reason="rev shell", alert_id="a1", human_confirmed=True)
-    assert posted["json"] == {"pid": 42, "reason": "rev shell", "alert_id": "a1"}
-    assert out == {"status": 200, "body": "ok"}
+def test_trigger_proceeds_on_human_override_when_no_agreement():
+    client = _RecordingClient()
+    with patch(m, "_dual_model_agrees", lambda aid: (False, "no record")), patch(m, "_http_client", client):
+        out = m.trigger_shuffle_response(pid=42, reason="x", alert_id="a", human_confirmed=True)
+    assert client.posted is not None
+    assert out["gate"] == "human_override"
 
 
 if __name__ == "__main__":

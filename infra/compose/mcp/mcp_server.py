@@ -137,6 +137,32 @@ def _response_actions_for(alert_id: str) -> dict:
     return _elastic_request("sentinel-response-actions/_search", "POST", body)
 
 
+def _triage_is_actionable(verdict: dict | None) -> bool:
+    # Same rule n8n's Cross-Check Gate applies to each model's verdict.
+    verdict = verdict or {}
+    return (str(verdict.get("severity", "")).lower() in ("high", "critical")
+            and str(verdict.get("false_positive_likelihood", "")).lower() == "low")
+
+
+def _dual_model_agrees(alert_id: str) -> tuple[bool, str]:
+    """Whether sentinel-triage holds a push-pipeline record for this alert
+    in which BOTH models independently rated it high/critical + low-FP and
+    cross_check_agreement is true -- i.e. exactly the condition under which
+    n8n would auto-fire. Fails closed: any lookup problem returns False."""
+    try:
+        doc = _get_doc_by_id("sentinel-triage", f"{alert_id}-push")
+    except _DocNotFound:
+        return False, f"no dual-model triage record (doc id '{alert_id}-push') in sentinel-triage"
+    except Exception as e:  # noqa: BLE001 -- ES unreachable, etc.: do not act
+        return False, f"could not read the triage record: {e}"
+    src = doc.get("_source", {})
+    if src.get("cross_check_agreement") is not True:
+        return False, f"cross_check_agreement is {src.get('cross_check_agreement')!r}, not true"
+    if not (_triage_is_actionable(src.get("triage")) and _triage_is_actionable(src.get("triage_secondary"))):
+        return False, "the record shows agreement, but not both models rated it high/critical + low-FP"
+    return True, ""
+
+
 _wazuh_token_cache: dict[str, str] = {}
 
 
@@ -248,21 +274,31 @@ def get_alert_context(alert_id: str) -> dict:
 @mcp.tool(annotations=DESTRUCTIVE)
 def trigger_shuffle_response(pid: int, reason: str, alert_id: str, human_confirmed: bool = False) -> dict:
     """Trigger the Shuffle auto-response workflow to kill a process by pid,
-    the same call n8n's Cross-Check Gate makes today. Shuffle and the
-    responder still enforce the protected-process allowlist -- this does
-    not bypass it.
+    the same call n8n's Cross-Check Gate makes. Shuffle and the responder
+    still enforce the protected-process allowlist and rate limit -- this
+    does not bypass them.
 
-    Unlike n8n's Cross-Check Gate, this tool has no dual-AI agreement
-    requirement of its own -- anything holding the MCP token can reach it
-    directly. `human_confirmed` must be explicitly passed as true: it exists
-    so an agent can't fire this as a quiet side effect of routine triage
-    browsing, and its presence in the call is what an approving human (or a
-    client's tool-use confirmation UI) is actually signing off on."""
-    if not human_confirmed:
-        return {"error": "human_confirmed must be true -- this bypasses the dual-AI agreement gate n8n normally requires; pass human_confirmed=true only after explicit human sign-off on this specific kill"}
+    Authorised one of two ways, and the result says which via `gate`:
+      - `cross_check_agreement`: sentinel-triage already holds a push-pipeline
+        record for this alert_id where both models rated it high/critical +
+        low-FP and agreed. This is the same bar n8n auto-fires on, so no
+        human_confirmed is needed.
+      - `human_override`: no such record (or the models disagreed). Then
+        `human_confirmed=true` must be passed -- an explicit, logged
+        sign-off, not a self-asserted boolean standing in for the gate.
+    Lookup failures fail closed (treated as no agreement)."""
+    agrees, why = _dual_model_agrees(alert_id)
+    if not agrees and not human_confirmed:
+        return {"error": f"refusing to trigger a response: {why}. Either trigger the n8n "
+                         f"pipeline so a dual-model agreement record exists, or pass "
+                         f"human_confirmed=true after explicit human sign-off on this kill."}
     body = {"pid": pid, "reason": reason, "alert_id": alert_id}
     resp = _http_client.post(SHUFFLE_WEBHOOK_URL, json=body, timeout=10)
-    return {"status": resp.status_code, "body": resp.text}
+    return {
+        "status": resp.status_code,
+        "body": resp.text,
+        "gate": "cross_check_agreement" if agrees else "human_override",
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
