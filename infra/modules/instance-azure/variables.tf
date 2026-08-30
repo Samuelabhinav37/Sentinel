@@ -35,5 +35,19 @@ variable "display_name" {
 
 variable "role" {
   type        = string
-  description = "elastic | wazuh | soar - selects which cloud-init template to render"
+  description = "elastic | wazuh | soar | target - selects which cloud-init template to render"
+}
+
+# Only consumed by target.yaml.tftpl (role == "target"). Empty defaults so the
+# elastic/wazuh/soar modules don't have to supply them.
+variable "elastic_url" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "elastic_password" {
+  type      = string
+  sensitive = true
+  default   = ""
 }
