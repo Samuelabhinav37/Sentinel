@@ -1,0 +1,41 @@
+auditbeat.modules:
+  - module: auditd
+    resolve_ids: true
+    failure_mode: log
+    backlog_limit: 8196
+    rate_limit: 0
+    include_raw_message: false
+    include_warnings: false
+    audit_rules: |
+      -a always,exit -F arch=b64 -S execve,execveat -k sentinel_exec
+
+processors:
+  - add_host_metadata: ~
+  # Same rationale as infra/compose/wazuh/auditbeat/auditbeat.yml: this project's
+  # Sigma rules only query process-creation (syscall) events, so drop every other
+  # message_type plus this host's own infrastructure noise. No wazuh-modulesd
+  # filter here - an attack target runs no Wazuh manager.
+  - drop_event:
+      when:
+        or:
+          - not:
+              equals:
+                auditd.message_type: "syscall"
+          - equals:
+              process.executable: "/usr/lib/systemd/systemd"
+          - equals:
+              process.executable: "/usr/lib/systemd/systemd-user-runtime-dir"
+          - equals:
+              process.executable: "/usr/sbin/tailscaled"
+
+output.elasticsearch:
+  hosts: ["${ELASTIC_URL}"]
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+  index: "auditbeat-linux"
+
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+logging.level: info
+logging.to_stderr: true
