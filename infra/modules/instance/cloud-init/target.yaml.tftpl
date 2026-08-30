@@ -1,0 +1,106 @@
+#cloud-config
+# Lightweight attack-target endpoint. Unlike base.yaml.tftpl (Docker + Tailscale
+# only; per-role stacks deployed out of band), this variant also drops and starts
+# a single auditbeat sensor so the box ships process-creation telemetry to the
+# existing live OCI Elastic SIEM the moment it joins the tailnet.
+#
+# Selected by the AWS / Azure instance modules when role == "target". The three
+# live OCI VMs keep using base.yaml.tftpl untouched.
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+
+write_files:
+  - path: /etc/sentinel-role
+    content: "${role}"
+
+  # Byte-for-byte the sensor from infra/compose/target/ (which is itself the
+  # sentinel-wazuh sensor). Kept inline because the box can't read the repo at boot.
+  - path: /opt/sentinel/target/docker-compose.yml
+    content: |
+      name: sentinel-auditbeat
+      services:
+        auditbeat:
+          image: docker.elastic.co/beats/auditbeat:9.2.1
+          container_name: sentinel-auditbeat
+          restart: unless-stopped
+          user: root
+          pid: host
+          network_mode: host
+          cap_add:
+            - AUDIT_CONTROL
+            - AUDIT_READ
+          volumes:
+            - /opt/sentinel/target/auditbeat.yml:/usr/share/auditbeat/auditbeat.yml:ro
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+            - /proc:/hostfs/proc:ro
+            - /:/hostfs:ro
+          command: ["-e", "--strict.perms=false"]
+
+  - path: /opt/sentinel/target/auditbeat.yml
+    content: |
+      auditbeat.modules:
+        - module: auditd
+          resolve_ids: true
+          failure_mode: log
+          backlog_limit: 8196
+          rate_limit: 0
+          include_raw_message: false
+          include_warnings: false
+          audit_rules: |
+            -a always,exit -F arch=b64 -S execve,execveat -k sentinel_exec
+
+      processors:
+        - add_host_metadata: ~
+        # Same rationale as infra/compose/wazuh/auditbeat/auditbeat.yml: the Sigma
+        # rules only query process-creation (syscall) events. Drop everything else
+        # plus this host's own infrastructure noise (systemd, tailscaled). No
+        # wazuh-modulesd filter here - there is no Wazuh on an attack target.
+        - drop_event:
+            when:
+              or:
+                - not:
+                    equals:
+                      auditd.message_type: "syscall"
+                - equals:
+                    process.executable: "/usr/lib/systemd/systemd"
+                - equals:
+                    process.executable: "/usr/lib/systemd/systemd-user-runtime-dir"
+                - equals:
+                    process.executable: "/usr/sbin/tailscaled"
+
+      output.elasticsearch:
+        hosts: ["${elastic_url}"]
+        username: "elastic"
+        password: "${elastic_password}"
+        index: "auditbeat-linux"
+
+      setup.template.enabled: false
+      setup.ilm.enabled: false
+
+      logging.level: info
+      logging.to_stderr: true
+
+runcmd:
+  # Docker Engine + Compose plugin
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - usermod -aG docker ubuntu
+
+  # Tailscale is the only path to Elastic (MagicDNS, e.g. http://sentinel-elastic:9200).
+  # Nothing beyond SSH and Tailscale itself is exposed on the public security group.
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - tailscale up --authkey=${tailscale_authkey} --hostname=${hostname} --ssh
+
+  # The target's single sensor is small and self-contained, so start it here rather
+  # than out of band. It reaches Elastic once tailscaled is up (line above).
+  - mkdir -p /opt/sentinel
+  - docker compose -f /opt/sentinel/target/docker-compose.yml up -d

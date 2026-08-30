@@ -21,6 +21,9 @@ oci_api_key*
 secrets/
 **/wazuh_indexer_ssl_certs/
 
+# Demo / evidence bundles (scripts/run-e2e-demo.sh) - may contain host detail
+demo-runs/
+
 # OS
 .DS_Store
 Thumbs.db

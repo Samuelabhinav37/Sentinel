@@ -1,0 +1,30 @@
+name: sentinel-auditbeat
+
+# Lightweight attack-target telemetry sensor, deployed on the AWS / Azure Linux
+# attack-target endpoints (infra/aws, infra/azure -> module "linux_target").
+# The same sensor as the hand-deployed one on sentinel-wazuh
+# (infra/compose/wazuh/auditbeat.yml). Kept here as a reference copy so:
+#   - CI's compose-config job validates it (it globs docker-compose*.yml), and
+#   - a human can see exactly what infra/modules/instance/cloud-init/target.yaml.tftpl
+#     drops onto the target box at first boot.
+# Deployed automatically by cloud-init; this file is not applied by hand.
+services:
+  auditbeat:
+    image: docker.elastic.co/beats/auditbeat:9.2.1
+    container_name: sentinel-auditbeat
+    restart: unless-stopped
+    user: root
+    pid: host
+    network_mode: host
+    cap_add:
+      - AUDIT_CONTROL
+      - AUDIT_READ
+    volumes:
+      - ./auditbeat.yml:/usr/share/auditbeat/auditbeat.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/hostfs/proc:ro
+      - /:/hostfs:ro
+    environment:
+      - ELASTIC_URL=${ELASTIC_URL}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    command: ["-e", "--strict.perms=false"]

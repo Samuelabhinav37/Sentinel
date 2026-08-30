@@ -51,6 +51,13 @@ Three OCI VMs, one Terraform config, deployed and reachable only over
 [Tailscale](https://tailscale.com/): Elasticsearch + Kibana; Wazuh manager + Suricata/Zeek;
 Shuffle SOAR + n8n.
 
+The Terraform also ports to Azure (`infra/azure/`, a full second stack) and AWS
+(`infra/aws/`). Both additionally carry a lightweight Linux **attack-target endpoint** — a
+single small VM that self-enrolls into the live OCI SIEM over Tailscale via the `target`
+cloud-init role (`infra/modules/instance/cloud-init/target.yaml.tftpl`), so the same
+detections can be fired from more than one cloud. See `docs/multi-cloud.md` and
+`docs/demo-runbook.md`.
+
 ## Detection Coverage
 
 18 Sigma rules (5 Windows, 13 Linux), every one **confirmed firing on live-fired real
@@ -156,8 +163,15 @@ Lab sizing is always an explicit opt-in — an env var, an extra `-f` compose fi
 ## Repo Layout
 
 - `infra/` — Terraform for OCI (VCN, security lists, compute), plus `compose/` (per-VM Docker
-  Compose stacks: `elastic/`, `wazuh/`, `soar/n8n/`, `soar/shuffle/`), `elasticsearch/` and
-  `kibana/` (index templates and the dashboard, as importable IaC)
+  Compose stacks: `elastic/`, `wazuh/`, `soar/n8n/`, `soar/shuffle/`, `target/`),
+  `elasticsearch/` and `kibana/` (index templates and the dashboard, as importable IaC)
+- `infra/azure/`, `infra/aws/` — separate Terraform roots (own state each): the Azure full
+  stack, plus a lightweight Linux attack-target endpoint on each cloud (`target` role).
+  `infra/modules/instance{,-azure,-aws}/` are the per-provider instance modules; see
+  `docs/multi-cloud.md`
+- `docs/demo-runbook.md` + `scripts/run-e2e-demo.sh` — the end-to-end pipeline demo (fire a
+  rule on a cloud target, follow it through triage → SOAR → bounded kill) and its screenshot
+  capture order; `scripts/setup-cloud-creds.sh` is the credential wizard for it
 - `detections/rules/` — Sigma rules, one per file, each tagged with an ATT&CK technique ID
 - `detections/tests/validation.yml` — per-rule validation evidence (Mordor replay, synthetic
   event, or live execution) and measured MTTD

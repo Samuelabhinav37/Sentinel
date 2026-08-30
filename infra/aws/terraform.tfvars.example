@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored - never commit it.
+#
+# AWS credentials come from the standard chain (environment variables,
+# ~/.aws/credentials, or `aws sso login`) - nothing AWS-credential-related goes
+# in this file.
+
+region = "us-east-1"
+
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# Reusable or ephemeral key from https://login.tailscale.com/admin/settings/keys
+tailscale_authkey = "tskey-auth-xxxxx"
+
+# The live OCI Elastic, reached over Tailscale. Use the MagicDNS name if the
+# target can resolve it, otherwise the sentinel-elastic tailnet IP.
+# elastic_password is the elastic superuser credential from infra/compose/elastic/.env.
+elastic_url      = "http://sentinel-elastic:9200"
+elastic_password = "xxxxx"

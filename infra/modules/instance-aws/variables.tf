@@ -1,22 +1,17 @@
-variable "resource_group_name" {
-  type = string
-}
-
-variable "location" {
-  type = string
-}
-
 variable "subnet_id" {
   type = string
 }
 
-variable "vm_size" {
+variable "security_group_ids" {
+  type = list(string)
+}
+
+variable "instance_type" {
   type = string
 }
 
-variable "admin_username" {
-  type    = string
-  default = "sentinel"
+variable "ami_id" {
+  type = string
 }
 
 variable "ssh_public_key_path" {
@@ -35,11 +30,11 @@ variable "display_name" {
 
 variable "role" {
   type        = string
-  description = "elastic | wazuh | soar | target - selects which cloud-init template to render"
+  description = "target | elastic | wazuh | soar - selects which cloud-init template to render"
 }
 
-# Only consumed by target.yaml.tftpl (role == "target"). Empty defaults so the
-# elastic/wazuh/soar modules don't have to supply them.
+# Only consumed by target.yaml.tftpl (role == \"target\"). Left with empty
+# defaults so the base.yaml.tftpl roles don't have to supply them.
 variable "elastic_url" {
   type      = string
   sensitive = true

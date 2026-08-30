@@ -1,7 +1,27 @@
-# Azure equivalent of infra/modules/instance (OCI). Deliberately reuses that module's
-# cloud-init template unmodified - cloud-init is provider-agnostic and both OCI and Azure
-# accept it as instance user-data (custom_data here), so provisioning behavior stays
-# identical across providers instead of being reimplemented per-cloud.
+# Azure equivalent of infra/modules/instance (OCI). Deliberately reuses those
+# provider-agnostic cloud-init templates unmodified - both OCI and Azure accept
+# them as instance user-data (custom_data here): base.yaml.tftpl for the stack
+# roles, target.yaml.tftpl for a lightweight attack-target endpoint that also
+# ships auditbeat to the live Elastic.
+locals {
+  custom_data = var.role == "target" ? templatefile(
+    "${path.module}/../instance/cloud-init/target.yaml.tftpl",
+    {
+      tailscale_authkey = var.tailscale_authkey
+      role              = var.role
+      hostname          = var.display_name
+      elastic_url       = var.elastic_url
+      elastic_password  = var.elastic_password
+    }
+    ) : templatefile(
+    "${path.module}/../instance/cloud-init/base.yaml.tftpl",
+    {
+      tailscale_authkey = var.tailscale_authkey
+      role              = var.role
+    }
+  )
+}
+
 resource "azurerm_public_ip" "this" {
   name                = "${var.display_name}-pip"
   resource_group_name = var.resource_group_name
@@ -53,13 +73,7 @@ resource "azurerm_linux_virtual_machine" "this" {
     version   = "latest"
   }
 
-  custom_data = base64encode(templatefile(
-    "${path.module}/../instance/cloud-init/base.yaml.tftpl",
-    {
-      tailscale_authkey = var.tailscale_authkey
-      role              = var.role
-    }
-  ))
+  custom_data = base64encode(local.custom_data)
 
   tags = {
     Role = var.role

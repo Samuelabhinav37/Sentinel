@@ -43,3 +43,22 @@ variable "soar_vm_size" {
   type    = string
   default = "Standard_D4s_v5" # 4 vCPU / 16 GiB
 }
+
+variable "target_vm_size" {
+  type    = string
+  default = "Standard_B2s" # 2 vCPU / 4 GiB burstable - one auditbeat container
+}
+
+# --- Elastic enrolment for the attack target. Ships auditbeat straight to the
+# live OCI Elastic over Tailscale. elastic_password is the elastic superuser
+# credential from infra/compose/elastic/.env; it lives only in the gitignored
+# terraform.tfvars. Only needed now that this root carries a telemetry target. ---
+variable "elastic_url" {
+  type      = string
+  sensitive = true
+}
+
+variable "elastic_password" {
+  type      = string
+  sensitive = true
+}
