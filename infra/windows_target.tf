@@ -8,14 +8,14 @@ data "oci_core_images" "windows_target" {
   operating_system_version = "Server 2022 Standard"
   shape                    = "VM.Standard.E4.Flex"
   sort_by                  = "TIMECREATED"
-  sort_order                = "DESC"
+  sort_order               = "DESC"
 }
 
 resource "oci_core_instance" "windows_target" {
   compartment_id      = var.compartment_ocid
   availability_domain = local.ad
   display_name        = "sentinel-win-target"
-  shape                = "VM.Standard.E4.Flex"
+  shape               = "VM.Standard.E4.Flex"
 
   shape_config {
     ocpus         = 2

@@ -2,7 +2,7 @@ resource "oci_core_instance" "this" {
   compartment_id      = var.compartment_ocid
   availability_domain = var.availability_domain
   display_name        = var.display_name
-  shape                = "VM.Standard.E4.Flex"
+  shape               = "VM.Standard.E4.Flex"
 
   shape_config {
     ocpus         = var.ocpus
@@ -25,7 +25,7 @@ resource "oci_core_instance" "this" {
       "${path.module}/cloud-init/base.yaml.tftpl",
       {
         tailscale_authkey = var.tailscale_authkey
-        role               = var.role
+        role              = var.role
       }
     ))
   }
